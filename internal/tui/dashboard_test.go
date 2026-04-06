@@ -700,8 +700,16 @@ func TestViewSnapshotWelcomeScreen(t *testing.T) {
 	assertContainsAll(t, out, []string{
 		"FramesCLI Setup",
 		"Welcome to FramesCLI",
-		"Quick keys:",
+		"import recordings",
 	})
+}
+
+func TestHelpPanelShowsGettingStarted(t *testing.T) {
+	m := dashboard{styles: makeStyles(themeDefault)}
+	out := m.renderHelpPanel()
+	if !strings.Contains(out, "Getting Started") || !strings.Contains(out, "Press [i] to import a video.") {
+		t.Fatalf("expected getting-started guidance, got: %s", out)
+	}
 }
 
 func assertContainsAll(t *testing.T, got string, needles []string) {

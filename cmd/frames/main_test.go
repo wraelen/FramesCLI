@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -459,4 +460,27 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+func TestPromptChoiceSelectsByNumber(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("2\n"))
+	got := promptChoice(reader, "Format", "png", []string{"png", "jpg"})
+	if got != "jpg" {
+		t.Fatalf("expected jpg, got %q", got)
+	}
+}
+
+func TestPromptChoiceKeepsDefaultOnBlank(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("\n"))
+	got := promptChoice(reader, "Backend", "auto", []string{"auto", "whisper", "faster-whisper"})
+	if got != "auto" {
+		t.Fatalf("expected default auto, got %q", got)
+	}
+}
+
+func TestPromptYesNoHonorsDefault(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("\n"))
+	if !promptYesNo(reader, "Save", true) {
+		t.Fatalf("expected default yes")
+	}
 }

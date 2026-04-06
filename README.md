@@ -51,11 +51,10 @@ Static preview artwork is included now. Replace with recorded product captures w
 
 ### Install FramesCLI
 
-Recommended for most users: install the latest prebuilt release binary.
+Recommended for most users: run the one-command bootstrap installer. It installs the latest release binary, can help install `ffmpeg`/`ffprobe`, and can launch `framescli setup` for first-run preferences.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/wraelen/framescli/main/scripts/install-release.sh | bash
-framescli --help
 ```
 
 Install a specific version:
@@ -63,6 +62,13 @@ Install a specific version:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/wraelen/framescli/main/scripts/install-release.sh | \
   bash -s -- --version v0.1.0
+```
+
+Non-interactive release install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wraelen/framescli/main/scripts/install-release.sh | \
+  bash -s -- --yes
 ```
 
 Install from source instead:
@@ -83,6 +89,7 @@ go build -o bin/framescli ./cmd/frames
 Notes:
 
 - The release installer places `framescli` into `~/.local/bin` by default.
+- After binary install, the bootstrap flow can run `doctor` and launch `framescli setup`.
 - Package-manager distribution (`apt`, Homebrew, winget, etc.) is not set up yet.
 - The local repo build helper remains available at `./scripts/install.sh`.
 

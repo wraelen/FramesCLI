@@ -3507,19 +3507,44 @@ func setupCommand() *cobra.Command {
 			}
 
 			reader := bufio.NewReader(os.Stdin)
+			printSetupSection("FramesCLI Setup", "Press Enter to keep the default in brackets. This wizard configures local defaults only.")
+
+			printSetupSection("1) Storage", "Choose where extracted runs and metadata should be written.")
 			cfg.FramesRoot = promptWithDefault(reader, "Frames root directory", cfg.FramesRoot)
-			cfg.OBSVideoDir = promptWithDefault(reader, "OBS videos directory", cfg.OBSVideoDir)
+
+			printSetupSection("2) Video Sources", "Help 'extract recent' find your newest recording quickly.")
+			cfg.OBSVideoDir = promptWithDefault(reader, "Primary recordings directory", cfg.OBSVideoDir)
 			cfg.RecentVideoDirs = splitCSVPaths(promptWithDefault(reader, "Recent video directories (comma-separated)", strings.Join(cfg.RecentVideoDirs, ",")))
 			cfg.RecentExts = splitCSVExts(promptWithDefault(reader, "Recent file extensions (comma-separated)", strings.Join(cfg.RecentExts, ",")))
+
+			printSetupSection("3) Extraction Defaults", "These defaults are used by extract, import, and the TUI wizard.")
 			cfg.DefaultFPS = appconfig.ParseFPS(promptWithDefault(reader, "Default FPS", fmt.Sprintf("%.2f", cfg.DefaultFPS)), cfg.DefaultFPS)
-			cfg.DefaultFormat = promptWithDefault(reader, "Default frame format (png/jpg)", cfg.DefaultFormat)
-			cfg.HWAccel = promptWithDefault(reader, "Hardware acceleration (none/auto/cuda/vaapi/qsv)", cfg.HWAccel)
-			cfg.PerformanceMode = promptWithDefault(reader, "Performance mode (safe/balanced/fast)", cfg.PerformanceMode)
+			cfg.DefaultFormat = promptChoice(reader, "Default frame format", cfg.DefaultFormat, []string{"png", "jpg"})
+			cfg.HWAccel = promptChoice(reader, "Hardware acceleration", cfg.HWAccel, []string{"none", "auto", "cuda", "vaapi", "qsv"})
+			cfg.PerformanceMode = promptChoice(reader, "Performance mode", cfg.PerformanceMode, []string{"safe", "balanced", "fast"})
+
+			printSetupSection("4) Transcription", "Optional, but useful when you want transcripts or AI context from audio.")
+			cfg.TranscribeBackend = promptChoice(reader, "Transcription backend", cfg.TranscribeBackend, []string{"auto", "whisper", "faster-whisper"})
 			cfg.WhisperBin = promptWithDefault(reader, "Whisper executable", cfg.WhisperBin)
 			cfg.FasterWhisperBin = promptWithDefault(reader, "Faster-Whisper executable", cfg.FasterWhisperBin)
 			cfg.WhisperModel = promptWhisperModel(reader, cfg.WhisperModel)
 			cfg.WhisperLanguage = promptWithDefault(reader, "Whisper language (blank=auto)", cfg.WhisperLanguage)
-			cfg.TranscribeBackend = promptWithDefault(reader, "Transcription backend (auto/whisper/faster-whisper)", cfg.TranscribeBackend)
+
+			fmt.Println("")
+			fmt.Println("Review")
+			fmt.Println("------")
+			fmt.Printf("Frames root:         %s\n", cfg.FramesRoot)
+			fmt.Printf("Recent directories:  %s\n", strings.Join(cfg.RecentVideoDirs, ", "))
+			fmt.Printf("Recent extensions:   %s\n", strings.Join(cfg.RecentExts, ", "))
+			fmt.Printf("Default FPS:         %.2f\n", cfg.DefaultFPS)
+			fmt.Printf("Frame format:        %s\n", cfg.DefaultFormat)
+			fmt.Printf("Hardware accel:      %s\n", cfg.HWAccel)
+			fmt.Printf("Performance mode:    %s\n", cfg.PerformanceMode)
+			fmt.Printf("Transcribe backend:  %s\n", cfg.TranscribeBackend)
+			if !promptYesNo(reader, "Save these settings now", true) {
+				fmt.Println("Setup canceled. No config changes were written.")
+				return
+			}
 
 			path, err := appconfig.Save(cfg)
 			if err != nil {
@@ -3536,6 +3561,9 @@ func setupCommand() *cobra.Command {
 				}
 			}
 			fmt.Printf("Saved config: %s\n", path)
+			fmt.Println("Next steps:")
+			fmt.Println("- Run `framescli doctor` to validate local dependencies.")
+			fmt.Println("- Run `framescli import` or `framescli tui` to start processing video.")
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "Write current defaults without prompts")
@@ -3745,6 +3773,72 @@ func promptWithDefault(reader *bufio.Reader, label, def string) string {
 		return def
 	}
 	return v
+}
+
+func printSetupSection(title string, body string) {
+	fmt.Println("")
+	fmt.Println(title)
+	fmt.Println(strings.Repeat("-", len(title)))
+	if strings.TrimSpace(body) != "" {
+		fmt.Println(body)
+	}
+}
+
+func promptChoice(reader *bufio.Reader, label, current string, choices []string) string {
+	if len(choices) == 0 {
+		return promptWithDefault(reader, label, current)
+	}
+	if strings.TrimSpace(current) == "" {
+		current = choices[0]
+	}
+	fmt.Printf("%s\n", label)
+	for i, choice := range choices {
+		marker := " "
+		if choice == current {
+			marker = "*"
+		}
+		fmt.Printf("  %d) %s %s\n", i+1, choice, marker)
+	}
+	fmt.Printf("Choice [%s]: ", current)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return current
+	}
+	choice := strings.TrimSpace(strings.ToLower(line))
+	if choice == "" {
+		return current
+	}
+	if n, parseErr := strconv.Atoi(choice); parseErr == nil {
+		if n >= 1 && n <= len(choices) {
+			return choices[n-1]
+		}
+		return current
+	}
+	for _, item := range choices {
+		if choice == item {
+			return item
+		}
+	}
+	return current
+}
+
+func promptYesNo(reader *bufio.Reader, label string, defaultYes bool) bool {
+	suffix := "[y/N]"
+	def := "n"
+	if defaultYes {
+		suffix = "[Y/n]"
+		def = "y"
+	}
+	fmt.Printf("%s %s: ", label, suffix)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return defaultYes
+	}
+	answer := strings.TrimSpace(strings.ToLower(line))
+	if answer == "" {
+		answer = def
+	}
+	return answer == "y" || answer == "yes"
 }
 
 func promptWhisperModel(reader *bufio.Reader, current string) string {

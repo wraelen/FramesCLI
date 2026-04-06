@@ -334,7 +334,7 @@ func newDashboard(rootDir string) (dashboard, error) {
 		vimMode:        cfg.TUIVimMode,
 		themePreset:    theme,
 		statusLevel:    statusInfo,
-		statusText:     "Ready. Pick a run from the list.",
+		statusText:     "Ready. Browse runs with arrows, or press [i] to import a video.",
 		dropFPSInput:   fmt.Sprintf("%.2f", cfg.DefaultFPS),
 		dropMode:       "both",
 		dropProfile:    "balanced",
@@ -347,7 +347,7 @@ func newDashboard(rootDir string) (dashboard, error) {
 		m.jobHistory = history
 	}
 	if !m.simpleMode {
-		m.statusText = "Advanced mode on. Press [a] to keep things simple."
+		m.statusText = "Ready. Advanced mode is on; press [i] to import or browse existing runs."
 	}
 	if cfgErr != nil {
 		m.setStatus(statusWarn, "Using default UI settings. Could not read your config file.")
@@ -444,7 +444,7 @@ func (m dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.tourStep = 0
 					m.firstRunTour = false
 				}
-				m.setStatus(statusSuccess, "Welcome complete. Quick keys: [Up/Down] move, [Left/Right] switch, [Enter] focus.")
+				m.setStatus(statusSuccess, "Welcome complete. Start with [i] to import a video, or browse runs with arrows.")
 				if err := m.persistUIPreferences(true); err != nil {
 					m.setError(err.Error())
 				}
@@ -466,7 +466,7 @@ func (m dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.tourStep >= 4 {
 					m.tourMode = false
 					m.tourStep = 0
-					m.setStatus(statusSuccess, "Tour complete. Press [i] to start an extraction wizard.")
+					m.setStatus(statusSuccess, "Tour complete. Press [i] to import your first video.")
 				}
 				return m, nil
 			case "b", "left", "h":
@@ -566,9 +566,9 @@ func (m dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.simpleMode {
-				m.setStatus(statusInfo, "Simple mode on. Plain-language controls are shown.")
+				m.setStatus(statusInfo, "Simple mode on. Beginner-friendly controls are now prioritized.")
 			} else {
-				m.setStatus(statusInfo, "Advanced mode on. Extra controls are available.")
+				m.setStatus(statusInfo, "Advanced mode on. More controls and power-user shortcuts are available.")
 			}
 			return m, nil
 		case "m":
@@ -878,7 +878,7 @@ func (m dashboard) renderPalettePanel() string {
 	actions := m.filteredPaletteActions()
 	lines := []string{
 		m.styles.title.Render("Command Menu"),
-		m.styles.subtle.Render("Type to filter | up/down or j/k | enter run | esc close"),
+		m.styles.subtle.Render("Type to filter commands | up/down or j/k move | Enter runs | Esc closes"),
 		fmt.Sprintf("query: %q", m.paletteQuery),
 		"",
 	}
@@ -915,8 +915,15 @@ func (m dashboard) renderHelpPanel() string {
 	}
 	lines := []string{
 		m.styles.title.Render("FramesCLI Help"),
-		m.styles.subtle.Render("Press esc or ? to close this panel."),
+		m.styles.subtle.Render("Press Esc or ? to close this panel."),
 		m.styles.subtle.Render(modeLine),
+		"",
+		"Getting Started",
+		"---------------",
+		"1) Press [i] to import a video.",
+		"2) Use [Up/Down] to choose a run.",
+		"3) Use [Left/Right] to switch sections.",
+		"4) Press [Enter] to move focus into details.",
 		"",
 		"Global",
 		"------",
@@ -959,7 +966,7 @@ func (m dashboard) renderHelpPanel() string {
 func (m dashboard) renderHistoryPanel() string {
 	lines := []string{
 		m.styles.title.Render("Job History"),
-		m.styles.subtle.Render("j/k move | Enter open output/log | Esc close"),
+		m.styles.subtle.Render("j/k move | Enter opens output/log | Esc closes"),
 		"",
 	}
 	if len(m.jobHistory) == 0 {
@@ -1635,22 +1642,22 @@ func (m dashboard) hint(key, text string) string {
 
 func (m dashboard) renderWelcomeModal() string {
 	modeLabel := "Simple"
-	quickKeys := "Quick keys: [Up/Down] move, [Left/Right] switch, [Enter] focus, [q] quit."
+	quickKeys := "Quick keys: [Up/Down] browse, [Left/Right] switch sections, [Enter] focus details, [q] quit."
 	if !m.simpleMode {
 		modeLabel = "Advanced"
-		quickKeys = "Quick keys: [Up/Down] move, [Left/Right] switch, [Enter] focus, [Ctrl+k] menu."
+		quickKeys = "Quick keys: [Up/Down] browse, [Left/Right] switch sections, [Enter] focus, [Ctrl+k] command menu."
 	}
 	lines := []string{
 		m.styles.modalTitle.Render("Welcome to FramesCLI"),
 		"",
-		"This screen helps you browse extracted runs quickly.",
-		"Use plain controls first: pick a run, then open details.",
+		"FramesCLI helps you import recordings, extract frames, and review artifacts locally.",
+		"Start simple: import a video, then browse the generated run and transcript.",
 		"",
 		fmt.Sprintf("Current mode: %s", modeLabel),
 		"Current theme: " + m.themePreset,
 		quickKeys,
 		"",
-		"[Enter] Start now    [a] Toggle Simple/Advanced    [v] Change theme",
+		"[Enter] Continue    [i] Import video    [a] Toggle Simple/Advanced    [v] Change theme",
 	}
 	w := min(max(44, m.winW-18), 88)
 	return m.styles.modal.Width(w).Render(strings.Join(lines, "\n"))
@@ -1758,18 +1765,18 @@ func (m dashboard) visibleCommandHints() []commandHint {
 	}
 	all := []commandHint{
 		{key: "[q]", text: "Quit"},
-		{key: "[Left/Right]", text: "Switch section"},
-		{key: "[Enter]", text: "Focus list/detail"},
-		{key: "[Up/Down]", text: "Move"},
-		{key: "[r]", text: "Refresh"},
 		{key: "[i]", text: "Import video"},
-		{key: "[c]", text: "Cancel task"},
-		{key: "[g]", text: "Guided tour"},
-		{key: "[J]", text: "Job history"},
+		{key: "[Up/Down]", text: "Browse"},
+		{key: "[Left/Right]", text: "Section"},
+		{key: "[Enter]", text: "Open detail"},
+		{key: "[r]", text: "Refresh"},
+		{key: "[J]", text: "History"},
+		{key: "[g]", text: "Tour"},
+		{key: "[?]", text: "Help"},
 		{key: "[a]", text: "Simple/Advanced"},
 		{key: "[m]", text: "Vim mode"},
 		{key: "[v]", text: "Theme"},
-		{key: "[?]", text: "Help"},
+		{key: "[c]", text: "Cancel task"},
 		{key: "[Ctrl+f]", text: "Find", advanced: true},
 		{key: "[Ctrl+k]", text: "Command menu", advanced: true},
 		{key: "[/]", text: "Filter", advanced: true},
