@@ -19,6 +19,7 @@ FramesCLI is now available as a standalone open-source CLI + TUI for turning scr
 - JSON-mode errors/partials now align with exit behavior for automation reliability
 - `doctor` includes clearer recovery guidance for missing dependencies
 - README and command documentation aligned to implemented command surface
+- GitHub-release installer script added for prebuilt binary installs
 
 ## Command Surface
 
@@ -59,10 +60,17 @@ go build -o bin/framescli ./cmd/frames
 ./bin/framescli --help
 ```
 
-Install locally:
+Install locally from source:
 
 ```bash
 ./scripts/install.sh
+framescli --help
+```
+
+Install a published release binary:
+
+```bash
+./scripts/install-release.sh --version v0.1.0
 framescli --help
 ```
 

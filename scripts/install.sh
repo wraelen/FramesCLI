@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Local source-build installer for contributors.
+# For end users installing published releases, prefer scripts/install-release.sh.
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_DIR="${HOME}/.local/bin"
 TARGET="${BIN_DIR}/framescli"

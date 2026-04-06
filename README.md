@@ -49,6 +49,43 @@ Static preview artwork is included now. Replace with recorded product captures w
 - `ffprobe`
 - `whisper` or `faster-whisper` (only required for transcription features)
 
+### Install FramesCLI
+
+Recommended for most users: install the latest prebuilt release binary.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wraelen/frames-cli-standalone/main/scripts/install-release.sh | bash
+framescli --help
+```
+
+Install a specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wraelen/frames-cli-standalone/main/scripts/install-release.sh | \
+  bash -s -- --version v0.1.0
+```
+
+Install from source instead:
+
+```bash
+go install github.com/wraelen/frames-cli-standalone/cmd/frames@latest
+framescli --help
+```
+
+Build locally from the checked-out repo:
+
+```bash
+go mod tidy
+go build -o bin/framescli ./cmd/frames
+./bin/framescli --help
+```
+
+Notes:
+
+- The release installer places `framescli` into `~/.local/bin` by default.
+- Package-manager distribution (`apt`, Homebrew, winget, etc.) is not set up yet.
+- The local repo build helper remains available at `./scripts/install.sh`.
+
 ### Dependency Install
 
 Recommended (repo script):
@@ -102,14 +139,6 @@ Notes:
   - `--transcribe-backend auto|whisper|faster-whisper`
   - `--transcribe-bin <path-or-name>`
   - `--transcribe-language <lang>`
-
-### Build FramesCLI
-
-```bash
-go mod tidy
-go build -o bin/framescli ./cmd/frames
-./bin/framescli --help
-```
 
 ### Quick Verification
 
