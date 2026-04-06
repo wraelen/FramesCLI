@@ -1,6 +1,6 @@
 # FramesCLI v0.1.0 (Public Beta)
 
-FramesCLI is now available as a standalone open-source CLI + TUI for turning screen recordings into agent-ready debugging artifacts.
+FramesCLI is now available as an open-source CLI + TUI for turning screen recordings into agent-ready debugging artifacts.
 
 ## Highlights
 

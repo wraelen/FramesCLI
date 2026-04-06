@@ -4,12 +4,12 @@
 
 Turn screen recordings into agent-ready artifacts: frame timelines, contact sheets, metadata, audio, and transcripts.
 
-FramesCLI is a standalone Go CLI + TUI built for debugging, troubleshooting, and coding-session review workflows.
+FramesCLI is a Go CLI + TUI built for debugging, troubleshooting, and coding-session review workflows.
 
-> [![Go Version](https://img.shields.io/github/go-mod/go-version/wraelen/frames-cli-standalone?style=flat-square)](https://github.com/wraelen/frames-cli-standalone/blob/main/go.mod)
-> [![Build](https://img.shields.io/github/actions/workflow/status/wraelen/frames-cli-standalone/ci.yml?branch=main&style=flat-square)](https://github.com/wraelen/frames-cli-standalone/actions)
-> [![License](https://img.shields.io/github/license/wraelen/frames-cli-standalone?style=flat-square)](./LICENSE)
-> [![Release](https://img.shields.io/github/v/release/wraelen/frames-cli-standalone?style=flat-square)](https://github.com/wraelen/frames-cli-standalone/releases)
+> [![Go Version](https://img.shields.io/github/go-mod/go-version/wraelen/framescli?style=flat-square)](https://github.com/wraelen/framescli/blob/main/go.mod)
+> [![Build](https://img.shields.io/github/actions/workflow/status/wraelen/framescli/ci.yml?branch=main&style=flat-square)](https://github.com/wraelen/framescli/actions)
+> [![License](https://img.shields.io/github/license/wraelen/framescli?style=flat-square)](./LICENSE)
+> [![Release](https://img.shields.io/github/v/release/wraelen/framescli?style=flat-square)](https://github.com/wraelen/framescli/releases)
 
 ## Hero
 
@@ -54,21 +54,21 @@ Static preview artwork is included now. Replace with recorded product captures w
 Recommended for most users: install the latest prebuilt release binary.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wraelen/frames-cli-standalone/main/scripts/install-release.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wraelen/framescli/main/scripts/install-release.sh | bash
 framescli --help
 ```
 
 Install a specific version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wraelen/frames-cli-standalone/main/scripts/install-release.sh | \
+curl -fsSL https://raw.githubusercontent.com/wraelen/framescli/main/scripts/install-release.sh | \
   bash -s -- --version v0.1.0
 ```
 
 Install from source instead:
 
 ```bash
-go install github.com/wraelen/frames-cli-standalone/cmd/frames@latest
+go install github.com/wraelen/framescli/cmd/frames@latest
 framescli --help
 ```
 

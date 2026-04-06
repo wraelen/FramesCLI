@@ -9,7 +9,7 @@ set -euo pipefail
 #   ./scripts/install-release.sh --install-dir /usr/local/bin
 #   ./scripts/install-release.sh --print-url
 
-REPO="${FRAMESCLI_REPO:-wraelen/frames-cli-standalone}"
+REPO="${FRAMESCLI_REPO:-wraelen/framescli}"
 BIN_NAME="framescli"
 INSTALL_DIR="${HOME}/.local/bin"
 VERSION=""
@@ -26,7 +26,7 @@ Options:
   -h, --help              Show this help message
 
 Environment:
-  FRAMESCLI_REPO          Override the GitHub repo slug (default: wraelen/frames-cli-standalone)
+  FRAMESCLI_REPO          Override the GitHub repo slug (default: wraelen/framescli)
 
 Notes:
   - Default install dir is ~/.local/bin
