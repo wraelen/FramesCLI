@@ -1,0 +1,8 @@
+/bin/
+/dist/
+/frames/
+/tmp/
+.gocache/
+*.out
+*.test
+.DS_Store

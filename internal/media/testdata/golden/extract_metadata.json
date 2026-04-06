@@ -1,0 +1,14 @@
+{
+  "fps": 2,
+  "frame_format": "png",
+  "extracted_audio": true,
+  "hwaccel": "none",
+  "preset": "safe",
+  "width": 320,
+  "height": 240,
+  "source_fps": 10,
+  "duration_sec": 2,
+  "start_time": "",
+  "end_time": "",
+  "every_n_frames": 0
+}

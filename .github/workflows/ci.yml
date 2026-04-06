@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+      - name: Tidy check
+        run: |
+          go mod tidy
+          git diff --exit-code
+      - name: Format check
+        run: |
+          test -z "$(gofmt -l ./cmd ./internal)"
+      - name: Unit tests
+        run: go test ./...
+      - name: CLI smoke
+        run: |
+          go run ./cmd/frames --help >/dev/null
+          go run ./cmd/frames doctor --help >/dev/null
+          go run ./cmd/frames benchmark --help >/dev/null
+          go run ./cmd/frames tui --help >/dev/null
+      - name: Build
+        run: go build ./...
+
+  smoke-matrix:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+      - name: Install ffmpeg (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Install ffmpeg (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install ffmpeg
+      - name: CLI smoke (help/doctor/preview ergonomics)
+        run: |
+          go run ./cmd/frames --help >/dev/null
+          go run ./cmd/frames doctor --help >/dev/null
+          go run ./cmd/frames preview --help >/dev/null

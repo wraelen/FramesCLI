@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-label="FramesCLI TUI hero placeholder">
+  <rect width="1200" height="675" fill="#0b1020"/>
+  <rect x="40" y="40" width="1120" height="595" rx="16" fill="#111827" stroke="#2dd4bf" stroke-width="2"/>
+  <text x="80" y="110" fill="#e5e7eb" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="40" font-weight="700">FramesCLI TUI Demo</text>
+  <text x="80" y="165" fill="#9ca3af" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="26">Replace this placeholder with docs/media/hero-tui.gif</text>
+  <rect x="80" y="210" width="1040" height="360" rx="12" fill="#0f172a" stroke="#334155"/>
+  <text x="120" y="280" fill="#93c5fd" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="24">[i] Import  [c] Cancel  [r] Refresh  [m] Vim Mode  [?] Help</text>
+  <text x="120" y="330" fill="#cbd5e1" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22">Show: import flow, wizard steps, queue progress, results actions.</text>
+</svg>
