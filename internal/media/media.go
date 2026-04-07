@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -75,6 +76,7 @@ type RunMetadata struct {
 	FPS            float64 `json:"fps"`
 	FrameFormat    string  `json:"frame_format"`
 	ExtractedAudio bool    `json:"extracted_audio"`
+	AudioPath      string  `json:"audio_path,omitempty"`
 	HWAccel        string  `json:"hwaccel,omitempty"`
 	FallbackUsed   bool    `json:"fallback_used,omitempty"`
 	Preset         string  `json:"preset,omitempty"`
@@ -195,6 +197,10 @@ func ExtractMedia(opts ExtractMediaOptions) (*ExtractMediaResult, error) {
 	}
 
 	videoPath := NormalizeVideoPath(opts.VideoPath)
+	videoPath, err = filepath.Abs(videoPath)
+	if err != nil {
+		return nil, err
+	}
 	videoInfo, err := ProbeVideoInfo(videoPath)
 	if err != nil {
 		return nil, fmt.Errorf("ffprobe failed for %q: %w", opts.VideoPath, err)
@@ -204,6 +210,10 @@ func ExtractMedia(opts ExtractMediaOptions) (*ExtractMediaResult, error) {
 		timestamp := makeRunFolderName(time.Now())
 		outDir = filepath.Join(DefaultFramesRoot, timestamp)
 		outDir = ensureUniquePath(outDir)
+	}
+	outDir, err = filepath.Abs(outDir)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
@@ -326,6 +336,7 @@ func ExtractMedia(opts ExtractMediaOptions) (*ExtractMediaResult, error) {
 		FPS:            opts.FPS,
 		FrameFormat:    frameFormat,
 		ExtractedAudio: opts.ExtractAudio,
+		AudioPath:      audioPath,
 		HWAccel:        usedHWAccel,
 		FallbackUsed:   fallbackUsed,
 		Preset:         preset,
@@ -417,11 +428,23 @@ func ExtractAudioFromVideoWithOptions(opts ExtractAudioOptions) (string, error) 
 	}
 
 	videoPath = NormalizeVideoPath(videoPath)
+	videoPath, err = filepath.Abs(videoPath)
+	if err != nil {
+		return "", err
+	}
+	outDir, err = filepath.Abs(outDir)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return "", err
 	}
 
 	audioPath := filepath.Join(outDir, filename)
+	audioPath, err = filepath.Abs(audioPath)
+	if err != nil {
+		return "", err
+	}
 	args := []string{
 		"-y",
 		"-i",
@@ -459,14 +482,26 @@ func TranscribeAudio(audioPath string, outDir string, verbose bool) (string, str
 }
 
 type TranscribeOptions struct {
-	Context   context.Context
-	AudioPath string
-	OutDir    string
-	Model     string
-	Language  string
-	Bin       string
-	Backend   string
-	Verbose   bool
+	Context    context.Context
+	AudioPath  string
+	OutDir     string
+	Model      string
+	Language   string
+	Bin        string
+	Backend    string
+	TimeoutSec int
+	Verbose    bool
+}
+
+type ErrTranscribeTimeout struct {
+	Seconds int
+}
+
+func (e *ErrTranscribeTimeout) Error() string {
+	if e == nil || e.Seconds <= 0 {
+		return "transcription timed out"
+	}
+	return fmt.Sprintf("transcription timed out after %ds", e.Seconds)
 }
 
 const (
@@ -566,6 +601,43 @@ func resolveTranscriptJSONPath(outDir, audioPath string) (string, error) {
 	return "", fmt.Errorf("no transcript json found in %s", outDir)
 }
 
+func hasGPU() bool {
+	if _, err := exec.LookPath("nvidia-smi"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/dev/nvidia0"); err == nil {
+		return true
+	}
+	return false
+}
+
+func whisperModelCachePath(model string) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	model = strings.TrimSpace(strings.ToLower(model))
+	if model == "" {
+		return "", errors.New("whisper model is required")
+	}
+	return filepath.Join(homeDir, ".cache", "whisper", model+".pt"), nil
+}
+
+func whisperModelDownloadSize(model string) string {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "tiny":
+		return "75MB"
+	case "base":
+		return "145MB"
+	case "small":
+		return "461MB"
+	case "medium":
+		return "1.5GB"
+	default:
+		return "unknown size"
+	}
+}
+
 func TranscribeAudioWithOptions(opts TranscribeOptions) (string, string, error) {
 	audioPath := opts.AudioPath
 	outDir := opts.OutDir
@@ -576,6 +648,14 @@ func TranscribeAudioWithOptions(opts TranscribeOptions) (string, string, error) 
 	if outDir == "" {
 		return "", "", errors.New("output directory is required")
 	}
+	audioPath, err := filepath.Abs(audioPath)
+	if err != nil {
+		return "", "", err
+	}
+	outDir, err = filepath.Abs(outDir)
+	if err != nil {
+		return "", "", err
+	}
 
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return "", "", err
@@ -585,7 +665,8 @@ func TranscribeAudioWithOptions(opts TranscribeOptions) (string, string, error) 
 	if model == "" {
 		model = strings.TrimSpace(os.Getenv("WHISPER_MODEL"))
 	}
-	if model == "" {
+	modelWasDefaulted := model == ""
+	if modelWasDefaulted {
 		model = "base"
 	}
 	language := strings.TrimSpace(opts.Language)
@@ -607,6 +688,22 @@ func TranscribeAudioWithOptions(opts TranscribeOptions) (string, string, error) 
 		return "", "", err
 	}
 
+	if !hasGPU() {
+		lowerModel := strings.ToLower(model)
+		baseOrLarger := strings.HasPrefix(lowerModel, "base") ||
+			strings.HasPrefix(lowerModel, "small") ||
+			strings.HasPrefix(lowerModel, "medium") ||
+			strings.HasPrefix(lowerModel, "large")
+		if baseOrLarger {
+			if modelWasDefaulted {
+				model = "tiny"
+				fmt.Fprintf(os.Stderr, "[framescli] info: no GPU detected — auto-selected model %q for CPU performance. Override with --transcribe-model.\n", model)
+			} else {
+				fmt.Fprintf(os.Stderr, "[framescli] warning: no GPU detected — transcription may be slow with model %q. Consider using --transcribe-model tiny for faster results on CPU.\n", model)
+			}
+		}
+	}
+
 	args := []string{
 		audioPath,
 		"--model", model,
@@ -617,7 +714,23 @@ func TranscribeAudioWithOptions(opts TranscribeOptions) (string, string, error) 
 		args = append(args, "--language", language)
 	}
 
-	cmd := exec.CommandContext(ctxOrBackground(opts.Context), transcribeBin, args...)
+	runCtx := ctxOrBackground(opts.Context)
+	var cancel context.CancelFunc
+	if opts.TimeoutSec > 0 {
+		runCtx, cancel = context.WithTimeout(runCtx, time.Duration(opts.TimeoutSec)*time.Second)
+		defer cancel()
+	}
+
+	if resolvedBackend == TranscribeBackendWhisper {
+		cachePath, cacheErr := whisperModelCachePath(model)
+		if cacheErr == nil {
+			if _, err := os.Stat(cachePath); os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "[framescli] downloading whisper model %q (~%s) — this only happens once.\n", model, whisperModelDownloadSize(model))
+			}
+		}
+	}
+
+	cmd := exec.CommandContext(runCtx, transcribeBin, args...)
 	var stderr bytes.Buffer
 	if verbose {
 		cmd.Stdout = os.Stdout
@@ -627,6 +740,10 @@ func TranscribeAudioWithOptions(opts TranscribeOptions) (string, string, error) 
 		cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	}
 	if err := cmd.Run(); err != nil {
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			fmt.Fprintf(os.Stderr, "[framescli] transcription timed out after %ds — skipping transcript.\n", opts.TimeoutSec)
+			return "", "", &ErrTranscribeTimeout{Seconds: opts.TimeoutSec}
+		}
 		if !verbose {
 			msg := strings.TrimSpace(stderr.String())
 			if msg != "" {
@@ -869,6 +986,11 @@ func OpenInExplorer(path string) error {
 	if path == "" {
 		return errors.New("path is required")
 	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	path = absPath
 	if runtime.GOOS == "windows" {
 		return exec.Command("explorer.exe", path).Start()
 	}
@@ -948,7 +1070,12 @@ func makeRunFolderName(now time.Time) string {
 	if hour12 == 0 {
 		hour12 = 12
 	}
-	return fmt.Sprintf("%s_%d-%02d%s", weekday, hour12, minute, ampm)
+	suffix := "000000"
+	var buf [3]byte
+	if _, err := rand.Read(buf[:]); err == nil {
+		suffix = fmt.Sprintf("%x", buf)
+	}
+	return fmt.Sprintf("%s_%d-%02d%s-%s", weekday, hour12, minute, ampm, suffix)
 }
 
 func ensureUniquePath(path string) string {
@@ -1022,6 +1149,11 @@ func probeVideoDurationSeconds(videoPath string) (float64, error) {
 }
 
 func ProbeVideoInfo(videoPath string) (VideoInfo, error) {
+	absVideoPath, err := filepath.Abs(videoPath)
+	if err != nil {
+		return VideoInfo{}, err
+	}
+	videoPath = absVideoPath
 	args := []string{
 		"-v", "error",
 		"-show_entries", "format=duration:stream=codec_type,width,height,r_frame_rate",
