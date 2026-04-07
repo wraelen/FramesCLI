@@ -624,7 +624,7 @@ func TranscribeAudioWithOptions(opts TranscribeOptions) (string, string, error) 
 		cmd.Stderr = os.Stderr
 	} else {
 		cmd.Stdout = io.Discard
-		cmd.Stderr = &stderr
+		cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	}
 	if err := cmd.Run(); err != nil {
 		if !verbose {
