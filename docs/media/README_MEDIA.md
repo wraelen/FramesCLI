@@ -1,13 +1,13 @@
 # README Media Guide
 
-Use these filenames so README embeds work without further edits:
+Use these filenames when adding recorded product demos:
 
 - `docs/media/hero-tui.gif`
 - `docs/media/hero-mcp.gif`
 - `docs/media/tui-overview.png`
 - `docs/media/mcp-session.png`
 
-Current repo includes SVG placeholders:
+Current repo still includes static SVG placeholder artwork for planning/demo layout:
 
 - `docs/media/hero-tui.svg`
 - `docs/media/hero-mcp.svg`

@@ -1,6 +1,6 @@
 # FramesCLI
 
-![FramesCLI Logo](brand/exports/logo-color.svg)
+![FramesCLI Logo](brand/exports/logo-hero.svg)
 
 Turn screen recordings into agent-ready artifacts: frame timelines, contact sheets, metadata, audio, and transcripts.
 
@@ -10,17 +10,6 @@ FramesCLI is a Go CLI + TUI built for debugging, troubleshooting, and coding-ses
 > [![Build](https://img.shields.io/github/actions/workflow/status/wraelen/framescli/ci.yml?branch=main&style=flat-square)](https://github.com/wraelen/framescli/actions)
 > [![License](https://img.shields.io/github/license/wraelen/framescli?style=flat-square)](./LICENSE)
 > [![Release](https://img.shields.io/github/v/release/wraelen/framescli?style=flat-square)](https://github.com/wraelen/framescli/releases)
-
-## Hero
-
-![FramesCLI TUI Preview](docs/media/hero-tui.svg)
-
-![FramesCLI MCP Agent Flow Preview](docs/media/hero-mcp.svg)
-
-Static preview artwork is included now. Replace with recorded product captures when available:
-
-- `docs/media/hero-tui.gif` or `docs/media/hero-tui.svg`
-- `docs/media/hero-mcp.gif` or `docs/media/hero-mcp.svg`
 
 ## Why Use It
 
@@ -474,7 +463,7 @@ go test -tags integration ./internal/media
 - Product + usage docs: `README.md`
 - Ongoing build checklist: `docs/CHECKLIST.md`
 - Agent workflow recipes: `docs/AGENT_RECIPES.md`
-- Media capture guide for README visuals: `docs/media/README_MEDIA.md`
+- Media capture guide for future product demos: `docs/media/README_MEDIA.md`
 - Brand assets and logo checklist: `brand/BRAND.md`, `brand/CHECKLIST.md`
 - Contributing guide: `CONTRIBUTING.md`
 - License: `LICENSE`

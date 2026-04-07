@@ -3506,45 +3506,16 @@ func setupCommand() *cobra.Command {
 				return
 			}
 
-			reader := bufio.NewReader(os.Stdin)
-			printSetupSection("FramesCLI Setup", "Press Enter to keep the default in brackets. This wizard configures local defaults only.")
-
-			printSetupSection("1) Storage", "Choose where extracted runs and metadata should be written.")
-			cfg.FramesRoot = promptWithDefault(reader, "Frames root directory", cfg.FramesRoot)
-
-			printSetupSection("2) Video Sources", "Help 'extract recent' find your newest recording quickly.")
-			cfg.OBSVideoDir = promptWithDefault(reader, "Primary recordings directory", cfg.OBSVideoDir)
-			cfg.RecentVideoDirs = splitCSVPaths(promptWithDefault(reader, "Recent video directories (comma-separated)", strings.Join(cfg.RecentVideoDirs, ",")))
-			cfg.RecentExts = splitCSVExts(promptWithDefault(reader, "Recent file extensions (comma-separated)", strings.Join(cfg.RecentExts, ",")))
-
-			printSetupSection("3) Extraction Defaults", "These defaults are used by extract, import, and the TUI wizard.")
-			cfg.DefaultFPS = appconfig.ParseFPS(promptWithDefault(reader, "Default FPS", fmt.Sprintf("%.2f", cfg.DefaultFPS)), cfg.DefaultFPS)
-			cfg.DefaultFormat = promptChoice(reader, "Default frame format", cfg.DefaultFormat, []string{"png", "jpg"})
-			cfg.HWAccel = promptChoice(reader, "Hardware acceleration", cfg.HWAccel, []string{"none", "auto", "cuda", "vaapi", "qsv"})
-			cfg.PerformanceMode = promptChoice(reader, "Performance mode", cfg.PerformanceMode, []string{"safe", "balanced", "fast"})
-
-			printSetupSection("4) Transcription", "Optional, but useful when you want transcripts or AI context from audio.")
-			cfg.TranscribeBackend = promptChoice(reader, "Transcription backend", cfg.TranscribeBackend, []string{"auto", "whisper", "faster-whisper"})
-			cfg.WhisperBin = promptWithDefault(reader, "Whisper executable", cfg.WhisperBin)
-			cfg.FasterWhisperBin = promptWithDefault(reader, "Faster-Whisper executable", cfg.FasterWhisperBin)
-			cfg.WhisperModel = promptWhisperModel(reader, cfg.WhisperModel)
-			cfg.WhisperLanguage = promptWithDefault(reader, "Whisper language (blank=auto)", cfg.WhisperLanguage)
-
-			fmt.Println("")
-			fmt.Println("Review")
-			fmt.Println("------")
-			fmt.Printf("Frames root:         %s\n", cfg.FramesRoot)
-			fmt.Printf("Recent directories:  %s\n", strings.Join(cfg.RecentVideoDirs, ", "))
-			fmt.Printf("Recent extensions:   %s\n", strings.Join(cfg.RecentExts, ", "))
-			fmt.Printf("Default FPS:         %.2f\n", cfg.DefaultFPS)
-			fmt.Printf("Frame format:        %s\n", cfg.DefaultFormat)
-			fmt.Printf("Hardware accel:      %s\n", cfg.HWAccel)
-			fmt.Printf("Performance mode:    %s\n", cfg.PerformanceMode)
-			fmt.Printf("Transcribe backend:  %s\n", cfg.TranscribeBackend)
-			if !promptYesNo(reader, "Save these settings now", true) {
+			result, cancelled, err := runSetupWizard(cfg)
+			if err != nil {
+				failf("Setup wizard failed: %v\n", err)
+				return
+			}
+			if cancelled {
 				fmt.Println("Setup canceled. No config changes were written.")
 				return
 			}
+			cfg = result.Config
 
 			path, err := appconfig.Save(cfg)
 			if err != nil {
