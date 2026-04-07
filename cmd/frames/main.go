@@ -179,6 +179,7 @@ func main() {
 	root.AddCommand(sheetCommand())
 	root.AddCommand(cleanCommand())
 	root.AddCommand(transcribeCommand())
+	root.AddCommand(transcribeRunCommand())
 	root.AddCommand(tuiCommand())
 	root.AddCommand(doctorCommand())
 	root.AddCommand(indexCommand())
@@ -233,6 +234,7 @@ type extractWorkflowOptions struct {
 	TranscribeBackend  string
 	TranscribeBin      string
 	TranscribeLanguage string
+	TranscribeTimeout  int
 	PostHook           string
 	PostHookTimeout    time.Duration
 }
@@ -274,6 +276,14 @@ type automationEnvelope struct {
 	DurationMs    int64            `json:"duration_ms"`
 	Data          any              `json:"data,omitempty"`
 	Error         *automationError `json:"error,omitempty"`
+}
+
+type transcribeRunResult struct {
+	RunDir         string `json:"run_dir"`
+	AudioPath      string `json:"audio_path"`
+	TranscriptTxt  string `json:"transcript_txt,omitempty"`
+	TranscriptJSON string `json:"transcript_json,omitempty"`
+	AlreadyPresent bool   `json:"already_present,omitempty"`
 }
 
 type batchItemResult struct {
@@ -371,18 +381,81 @@ func annotateStorageError(err error) error {
 	return err
 }
 
+func resolveRunAudioPath(runDir string, md media.RunMetadata) (string, error) {
+	audioPath := strings.TrimSpace(md.AudioPath)
+	defaultAudioPath := filepath.Join(runDir, "voice", "voice.wav")
+	if audioPath == "" {
+		audioPath = defaultAudioPath
+	} else if !filepath.IsAbs(audioPath) {
+		audioPath = filepath.Join(runDir, audioPath)
+	}
+	audioPath, err := filepath.Abs(audioPath)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(audioPath); err == nil {
+		return audioPath, nil
+	}
+	defaultAudioPath, err = filepath.Abs(defaultAudioPath)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(defaultAudioPath); err == nil {
+		return defaultAudioPath, nil
+	}
+	return "", fmt.Errorf("no extracted audio found in %s", filepath.Join(runDir, "voice"))
+}
+
+func runTranscribeRunResult(ctx context.Context, runDir string, opts media.TranscribeOptions) (transcribeRunResult, error) {
+	runDir, err := filepath.Abs(runDir)
+	if err != nil {
+		return transcribeRunResult{}, err
+	}
+	md, err := media.ReadRunMetadata(runDir)
+	if err != nil {
+		return transcribeRunResult{}, err
+	}
+	audioPath, err := resolveRunAudioPath(runDir, md)
+	if err != nil {
+		return transcribeRunResult{}, err
+	}
+
+	voiceDir := filepath.Join(runDir, "voice")
+	transcriptJSON := filepath.Join(voiceDir, "transcript.json")
+	transcriptTxt := filepath.Join(voiceDir, "transcript.txt")
+	result := transcribeRunResult{
+		RunDir:    runDir,
+		AudioPath: audioPath,
+	}
+	if _, err := os.Stat(transcriptJSON); err == nil {
+		result.TranscriptJSON = transcriptJSON
+		if _, txtErr := os.Stat(transcriptTxt); txtErr == nil {
+			result.TranscriptTxt = transcriptTxt
+		}
+		result.AlreadyPresent = true
+		return result, nil
+	}
+
+	opts.Context = ctx
+	opts.AudioPath = audioPath
+	opts.OutDir = voiceDir
+	txt, jsonPath, err := media.TranscribeAudioWithOptions(opts)
+	if err != nil {
+		return result, err
+	}
+	result.TranscriptTxt = txt
+	result.TranscriptJSON = jsonPath
+	return result, nil
+}
+
 func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float64, opts extractWorkflowOptions, interactive bool) (extractWorkflowResult, error) {
 	started := time.Now()
 	result := extractWorkflowResult{
 		VideoInput: videoInput,
-		FPS:        fps,
 		Preset:     opts.Preset,
 	}
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	if fps <= 0 {
-		return result, fmt.Errorf("invalid fps value. use a positive number")
 	}
 	if opts.SheetCols <= 0 {
 		return result, fmt.Errorf("invalid sheet-cols value. use a positive number")
@@ -405,6 +478,10 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 	if err != nil {
 		return result, fmt.Errorf("invalid video input %q: %w", videoPath, err)
 	}
+	if fps <= 0 {
+		fps = autoFPSForDuration(videoInfo.DurationSec)
+	}
+	result.FPS = fps
 	result.VideoInfo = videoInfo
 	if interactive {
 		fmt.Printf("  video: %s\n", videoPath)
@@ -530,6 +607,7 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 
 	transcriptTxt := ""
 	transcriptJSON := ""
+	transcriptionTimedOut := false
 	if opts.Voice {
 		if interactive {
 			fmt.Println("[4/4] Transcribing voice")
@@ -540,51 +618,68 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		}
 		if interactive && opts.Verbose {
 			transcriptTxt, transcriptJSON, err = media.TranscribeAudioWithOptions(media.TranscribeOptions{
-				Context:   ctx,
-				AudioPath: extractResult.AudioPath,
-				OutDir:    voiceDir,
-				Model:     opts.TranscribeModel,
-				Backend:   opts.TranscribeBackend,
-				Bin:       opts.TranscribeBin,
-				Language:  opts.TranscribeLanguage,
-				Verbose:   true,
+				Context:    ctx,
+				AudioPath:  extractResult.AudioPath,
+				OutDir:     voiceDir,
+				Model:      opts.TranscribeModel,
+				Backend:    opts.TranscribeBackend,
+				Bin:        opts.TranscribeBin,
+				Language:   opts.TranscribeLanguage,
+				TimeoutSec: opts.TranscribeTimeout,
+				Verbose:    true,
 			})
 		} else if interactive {
 			progressTracker.render("transcribing voice", 88)
 			err = runSpinner("  transcribe", func() error {
 				var spinnerErr error
 				transcriptTxt, transcriptJSON, spinnerErr = media.TranscribeAudioWithOptions(media.TranscribeOptions{
-					Context:   ctx,
-					AudioPath: extractResult.AudioPath,
-					OutDir:    voiceDir,
-					Model:     opts.TranscribeModel,
-					Backend:   opts.TranscribeBackend,
-					Bin:       opts.TranscribeBin,
-					Language:  opts.TranscribeLanguage,
-					Verbose:   false,
+					Context:    ctx,
+					AudioPath:  extractResult.AudioPath,
+					OutDir:     voiceDir,
+					Model:      opts.TranscribeModel,
+					Backend:    opts.TranscribeBackend,
+					Bin:        opts.TranscribeBin,
+					Language:   opts.TranscribeLanguage,
+					TimeoutSec: opts.TranscribeTimeout,
+					Verbose:    false,
 				})
 				return spinnerErr
 			})
 		} else {
 			transcriptTxt, transcriptJSON, err = media.TranscribeAudioWithOptions(media.TranscribeOptions{
-				Context:   ctx,
-				AudioPath: extractResult.AudioPath,
-				OutDir:    voiceDir,
-				Model:     opts.TranscribeModel,
-				Backend:   opts.TranscribeBackend,
-				Bin:       opts.TranscribeBin,
-				Language:  opts.TranscribeLanguage,
-				Verbose:   false,
+				Context:    ctx,
+				AudioPath:  extractResult.AudioPath,
+				OutDir:     voiceDir,
+				Model:      opts.TranscribeModel,
+				Backend:    opts.TranscribeBackend,
+				Bin:        opts.TranscribeBin,
+				Language:   opts.TranscribeLanguage,
+				TimeoutSec: opts.TranscribeTimeout,
+				Verbose:    false,
 			})
 		}
 		if err != nil {
 			if cerr := normalizeCancellationError(ctx, err); cerr != nil {
 				return result, cerr
 			}
-			err = annotateStorageError(err)
-			return result, fmt.Errorf("voice transcription failed: %w", err)
+			var timeoutErr *media.ErrTranscribeTimeout
+			if errors.As(err, &timeoutErr) {
+				warning := timeoutErr.Error()
+				transcriptionTimedOut = true
+				result.Warnings = append(result.Warnings, warning)
+				if interactive && !opts.Verbose {
+					progressTracker.render("transcription timed out", 98)
+					fmt.Println("")
+				}
+				if interactive {
+					fmt.Printf("Warning:       %s\n", warning)
+				}
+			} else {
+				err = annotateStorageError(err)
+				return result, fmt.Errorf("voice transcription failed: %w", err)
+			}
 		}
-		if interactive && !opts.Verbose {
+		if interactive && !opts.Verbose && !transcriptionTimedOut {
 			progressTracker.render("transcription complete", 98)
 			fmt.Println("")
 		}
@@ -927,23 +1022,56 @@ func normalizeDroppedPath(input string) string {
 	return strings.TrimSpace(s)
 }
 
+func parseExtractFPSSpec(spec string) (float64, error) {
+	spec = strings.TrimSpace(strings.ToLower(spec))
+	if spec == "" || spec == "auto" {
+		return 0, nil
+	}
+	fps, err := strconv.ParseFloat(spec, 64)
+	if err != nil {
+		return 0, err
+	}
+	if fps < 0 {
+		return 0, fmt.Errorf("fps must be >= 0")
+	}
+	return fps, nil
+}
+
+func autoFPSForDuration(durationSec float64) float64 {
+	if durationSec <= 0 {
+		return 1
+	}
+	fps := math.Round(60.0 / durationSec)
+	if fps < 1 {
+		return 1
+	}
+	return fps
+}
+
 func extractCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "extract <videoPath|recent> [fps]",
 		Short: "Extract video frames (png/jpg), optional voice transcription",
 		Args:  cobra.RangeArgs(1, 2),
 		Run: func(cmd *cobra.Command, args []string) {
-			fps, _ := cmd.Flags().GetFloat64("fps")
-			if !cmd.Flags().Changed("fps") && appCfg.DefaultFPS > 0 {
-				fps = appCfg.DefaultFPS
+			fpsSpec, _ := cmd.Flags().GetString("fps")
+			if !cmd.Flags().Changed("fps") {
+				if appCfg.DefaultFPS > 0 {
+					fpsSpec = fmt.Sprintf("%g", appCfg.DefaultFPS)
+				} else {
+					fpsSpec = "auto"
+				}
 			}
 			if len(args) >= 2 {
-				parsedFPS, err := strconv.ParseFloat(args[1], 64)
-				if err != nil || parsedFPS <= 0 {
-					failln("Invalid fps value. Use a positive number.")
-					return
-				}
-				fps = parsedFPS
+				fpsSpec = args[1]
+			}
+			fps, err := parseExtractFPSSpec(fpsSpec)
+			if err != nil {
+				failln("Invalid fps value. Use a positive number, 0, or auto.")
+				return
+			}
+			if fps == 0 && strings.TrimSpace(strings.ToLower(fpsSpec)) != "auto" {
+				// allow explicit 0 as auto mode
 			}
 			outDir, _ := cmd.Flags().GetString("out")
 			voice, _ := cmd.Flags().GetBool("voice")
@@ -975,6 +1103,7 @@ func extractCommand() *cobra.Command {
 			transcribeBackend, _ := cmd.Flags().GetString("transcribe-backend")
 			transcribeBin, _ := cmd.Flags().GetString("transcribe-bin")
 			transcribeLanguage, _ := cmd.Flags().GetString("transcribe-language")
+			transcribeTimeout, _ := cmd.Flags().GetInt("transcribe-timeout")
 			postHook, _ := cmd.Flags().GetString("post-hook")
 			postHookTimeout, _ := cmd.Flags().GetDuration("post-hook-timeout")
 			jsonOut, _ := cmd.Flags().GetBool("json")
@@ -1012,6 +1141,7 @@ func extractCommand() *cobra.Command {
 				TranscribeBackend:  transcribeBackend,
 				TranscribeBin:      transcribeBin,
 				TranscribeLanguage: transcribeLanguage,
+				TranscribeTimeout:  transcribeTimeout,
 				PostHook:           postHook,
 				PostHookTimeout:    postHookTimeout,
 			}
@@ -1104,7 +1234,7 @@ func extractCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Float64("fps", 4, "Frames per second")
+	cmd.Flags().String("fps", fmt.Sprintf("%g", appCfg.DefaultFPS), "Frames per second, or 0/auto for automatic ~60-frame mode")
 	cmd.Flags().String("out", "", "Output directory")
 	cmd.Flags().Bool("voice", false, "Extract audio and generate transcript in the output folder")
 	cmd.Flags().String("format", "png", "Frame output format: png or jpg")
@@ -1132,6 +1262,7 @@ func extractCommand() *cobra.Command {
 	cmd.Flags().String("transcribe-backend", appCfg.TranscribeBackend, "Transcription backend: auto|whisper|faster-whisper")
 	cmd.Flags().String("transcribe-bin", "", "Override transcription CLI binary path/name for selected backend")
 	cmd.Flags().String("transcribe-language", appCfg.WhisperLanguage, "Transcription language override (blank=auto)")
+	cmd.Flags().Int("transcribe-timeout", 0, "Skip transcription if it runs longer than N seconds (0 disables timeout)")
 	cmd.Flags().String("post-hook", "", "Run command after successful extraction (overrides config post_extract_hook)")
 	cmd.Flags().Duration("post-hook-timeout", 0, "Post-hook timeout (e.g. 30s, 2m)")
 	cmd.Flags().Bool("json", false, "Output machine-readable JSON")
@@ -1840,6 +1971,58 @@ type mcpServerState struct {
 	maxTimeout time.Duration
 }
 
+func (s *mcpServerState) writeNotification(method string, params any) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	payload := map[string]any{
+		"jsonrpc": "2.0",
+		"method":  method,
+		"params":  params,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(s.out, "Content-Length: %d\r\n\r\n%s", len(raw), raw)
+	return err
+}
+
+func (s *mcpServerState) startHeartbeat(ctx context.Context, toolName string) func() {
+	switch toolName {
+	case "extract", "extract_batch", "transcribe_run":
+	default:
+		return func() {}
+	}
+	started := time.Now()
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-ticker.C:
+				elapsed := int(time.Since(started).Seconds())
+				verb := "working"
+				switch toolName {
+				case "extract", "extract_batch":
+					verb = "extracting"
+				case "transcribe_run":
+					verb = "transcribing"
+				}
+				_ = s.writeNotification("notifications/message", map[string]any{
+					"level":   "info",
+					"message": fmt.Sprintf("%s... %ds elapsed", verb, elapsed),
+				})
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
 func mcpAllowedRoots() []string {
 	roots := make([]string, 0, 8)
 	add := func(p string) {
@@ -2017,6 +2200,8 @@ func runMCPServer(in io.Reader, out io.Writer) error {
 			go func(reqID json.RawMessage, p mcpToolCallParams, ctx context.Context, cancel context.CancelFunc) {
 				defer cancel()
 				defer state.completeCall(reqID)
+				stopHeartbeat := state.startHeartbeat(ctx, p.Name)
+				defer stopHeartbeat()
 				result, err := callMCPTool(ctx, p.Name, p.Arguments)
 				if err != nil {
 					msg := err.Error()
@@ -2161,6 +2346,16 @@ func handleMCPRequest(req mcpRequest) *mcpResponse {
 					"type": "object",
 					"properties": map[string]any{
 						"root": map[string]any{"type": "string"},
+					},
+				},
+			},
+			{
+				"name":        "transcribe_run",
+				"description": "Resume transcription for an existing run directory",
+				"inputSchema": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"run_dir": map[string]any{"type": "string"},
 					},
 				},
 			},
@@ -2463,6 +2658,32 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			"root":      args.Root,
 			"artifacts": artifacts,
 		}, nil), nil
+	case "transcribe_run":
+		var args struct {
+			RunDir string `json:"run_dir"`
+		}
+		_ = json.Unmarshal(argsRaw, &args)
+		if strings.TrimSpace(args.RunDir) == "" {
+			return nil, fmt.Errorf("transcribe_run requires run_dir")
+		}
+		if err := ensureMCPPathAllowed(args.RunDir); err != nil {
+			return nil, err
+		}
+		started := time.Now()
+		res, err := runTranscribeRunResult(ctx, args.RunDir, media.TranscribeOptions{
+			Model:      appCfg.WhisperModel,
+			Backend:    appCfg.TranscribeBackend,
+			Language:   appCfg.WhisperLanguage,
+			TimeoutSec: 0,
+			Verbose:    false,
+		})
+		if err != nil {
+			if ctx != nil && ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return buildAutomationEnvelope("transcribe_run", started, "error", map[string]string{"run_dir": args.RunDir}, err), nil
+		}
+		return buildAutomationEnvelope("transcribe_run", started, "success", res, nil), nil
 	case "prefs_get":
 		started := time.Now()
 		payload := map[string]any{
@@ -2800,6 +3021,71 @@ func transcribeCommand() *cobra.Command {
 	return cmd
 }
 
+func transcribeRunCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "transcribe-run <runDir>",
+		Short: "Resume transcription for an existing extracted run",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			started := time.Now()
+			verbose, _ := cmd.Flags().GetBool("verbose")
+			model, _ := cmd.Flags().GetString("model")
+			backend, _ := cmd.Flags().GetString("backend")
+			bin, _ := cmd.Flags().GetString("bin")
+			language, _ := cmd.Flags().GetString("language")
+			timeoutSec, _ := cmd.Flags().GetInt("timeout")
+			jsonOut, _ := cmd.Flags().GetBool("json")
+			appconfig.ApplyEnvDefaults(appCfg)
+			result, err := runTranscribeRunResult(cmd.Context(), args[0], media.TranscribeOptions{
+				Model:      model,
+				Backend:    backend,
+				Bin:        bin,
+				Language:   language,
+				TimeoutSec: timeoutSec,
+				Verbose:    verbose,
+			})
+			if err != nil {
+				if jsonOut {
+					emitAutomationJSON("transcribe-run", started, "error", map[string]string{"run_dir": args[0]}, err)
+					if isCancellationError(err) {
+						markCommandInterrupted()
+					} else {
+						markCommandFailure()
+					}
+					return
+				}
+				if isCancellationError(err) {
+					markCommandInterrupted()
+					fmt.Fprintln(os.Stderr, "Cancelled.")
+				} else {
+					failf("Transcribe-run failed: %v\n", err)
+				}
+				return
+			}
+			if jsonOut {
+				emitAutomationJSON("transcribe-run", started, "success", result, nil)
+				return
+			}
+			if result.AlreadyPresent {
+				fmt.Printf("Transcript already present: %s\n", result.TranscriptJSON)
+				if result.TranscriptTxt != "" {
+					fmt.Printf("Transcript: %s\n", result.TranscriptTxt)
+				}
+				return
+			}
+			fmt.Printf("Transcript: %s\nJSON: %s\n", result.TranscriptTxt, result.TranscriptJSON)
+		},
+	}
+	cmd.Flags().Bool("verbose", false, "Show raw transcription backend logs")
+	cmd.Flags().String("model", appCfg.WhisperModel, "Transcription model")
+	cmd.Flags().String("backend", appCfg.TranscribeBackend, "Transcription backend: auto|whisper|faster-whisper")
+	cmd.Flags().String("bin", "", "Override transcription CLI binary path/name for selected backend")
+	cmd.Flags().String("language", appCfg.WhisperLanguage, "Transcription language override (blank=auto)")
+	cmd.Flags().Int("timeout", 0, "Stop transcription if it runs longer than N seconds (0 disables timeout)")
+	cmd.Flags().Bool("json", false, "Output machine-readable JSON")
+	return cmd
+}
+
 func tuiCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tui",
@@ -2874,27 +3160,54 @@ type toolCheck struct {
 }
 
 type doctorReport struct {
-	GeneratedAt         string                        `json:"generated_at"`
-	GOOS                string                        `json:"goos"`
-	GOARCH              string                        `json:"goarch"`
-	ConfigPath          string                        `json:"config_path"`
-	Config              appconfig.Config              `json:"config"`
-	Environment         map[string]string             `json:"environment"`
-	Tools               []toolCheck                   `json:"tools"`
-	FFmpegVersion       string                        `json:"ffmpeg_version,omitempty"`
-	FFmpegVersionError  string                        `json:"ffmpeg_version_error,omitempty"`
-	FFmpegHWAccels      []string                      `json:"ffmpeg_hwaccels,omitempty"`
-	FFmpegHWAccelsError string                        `json:"ffmpeg_hwaccels_error,omitempty"`
-	ConfigWarnings      []appconfig.ValidationWarning `json:"config_warnings,omitempty"`
-	RequiredFailed      bool                          `json:"required_failed"`
+	GeneratedAt              string                        `json:"generated_at"`
+	GOOS                     string                        `json:"goos"`
+	GOARCH                   string                        `json:"goarch"`
+	ConfigPath               string                        `json:"config_path"`
+	Config                   appconfig.Config              `json:"config"`
+	Environment              map[string]string             `json:"environment"`
+	Tools                    []toolCheck                   `json:"tools"`
+	GPUAvailable             bool                          `json:"gpu_available"`
+	WhisperModel             string                        `json:"whisper_model"`
+	EstimatedTranscribeSpeed string                        `json:"estimated_transcribe_speed"`
+	FFmpegVersion            string                        `json:"ffmpeg_version,omitempty"`
+	FFmpegVersionError       string                        `json:"ffmpeg_version_error,omitempty"`
+	FFmpegHWAccels           []string                      `json:"ffmpeg_hwaccels,omitempty"`
+	FFmpegHWAccelsError      string                        `json:"ffmpeg_hwaccels_error,omitempty"`
+	ConfigWarnings           []appconfig.ValidationWarning `json:"config_warnings,omitempty"`
+	RequiredFailed           bool                          `json:"required_failed"`
+}
+
+func doctorHasGPU() bool {
+	if _, err := exec.LookPath("nvidia-smi"); err == nil {
+		cmd := exec.Command("nvidia-smi")
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+		if err := cmd.Run(); err == nil {
+			return true
+		}
+	}
+	if _, err := os.Stat("/dev/nvidia0"); err == nil {
+		return true
+	}
+	return false
 }
 
 func collectDoctorReport(cfg appconfig.Config) doctorReport {
+	whisperModel := strings.TrimSpace(os.Getenv("WHISPER_MODEL"))
+	if whisperModel == "" {
+		whisperModel = strings.TrimSpace(cfg.WhisperModel)
+	}
+	if whisperModel == "" {
+		whisperModel = "base"
+	}
 	r := doctorReport{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		GOOS:        runtime.GOOS,
-		GOARCH:      runtime.GOARCH,
-		Config:      cfg,
+		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+		GOOS:         runtime.GOOS,
+		GOARCH:       runtime.GOARCH,
+		Config:       cfg,
+		GPUAvailable: doctorHasGPU(),
+		WhisperModel: whisperModel,
 		Environment: map[string]string{
 			"OBS_VIDEO_DIR":      valueOrDash(os.Getenv("OBS_VIDEO_DIR")),
 			"WHISPER_BIN":        valueOrDash(os.Getenv("WHISPER_BIN")),
@@ -2903,6 +3216,11 @@ func collectDoctorReport(cfg appconfig.Config) doctorReport {
 			"WHISPER_LANGUAGE":   valueOrDash(os.Getenv("WHISPER_LANGUAGE")),
 			"TRANSCRIBE_BACKEND": valueOrDash(os.Getenv("TRANSCRIBE_BACKEND")),
 		},
+	}
+	if r.GPUAvailable {
+		r.EstimatedTranscribeSpeed = "fast"
+	} else {
+		r.EstimatedTranscribeSpeed = "slow (no GPU)"
 	}
 	if cfgPath, err := appconfig.Path(); err == nil {
 		r.ConfigPath = cfgPath
@@ -2974,6 +3292,9 @@ func printDoctorReport(r doctorReport) {
 	fmt.Printf("WHISPER_MODEL:     %s\n", valueOrDash(r.Environment["WHISPER_MODEL"]))
 	fmt.Printf("WHISPER_LANGUAGE:  %s\n", valueOrDash(r.Environment["WHISPER_LANGUAGE"]))
 	fmt.Printf("TRANSCRIBE_BACKEND:%s\n", valueOrDash(r.Environment["TRANSCRIBE_BACKEND"]))
+	fmt.Printf("GPU_AVAILABLE:     %t\n", r.GPUAvailable)
+	fmt.Printf("WHISPER_MODEL_CFG: %s\n", valueOrDash(r.WhisperModel))
+	fmt.Printf("TRANSCRIBE_SPEED:  %s\n", valueOrDash(r.EstimatedTranscribeSpeed))
 	if strings.TrimSpace(r.FFmpegVersion) != "" {
 		fmt.Printf("FFMPEG_VERSION:    %s\n", r.FFmpegVersion)
 	} else {
