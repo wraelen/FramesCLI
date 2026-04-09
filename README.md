@@ -1,6 +1,8 @@
 # FramesCLI
 
-![FramesCLI Logo](brand/exports/logo-hero.svg)
+<p align="center">
+  <img src="brand/exports/logo-hero.svg" alt="FramesCLI" width="220">
+</p>
 
 Turn screen recordings into agent-ready artifacts: frame timelines, contact sheets, metadata, audio, and transcripts.
 
@@ -298,6 +300,12 @@ Key bindings:
 ## Agent and MCP Integration
 
 FramesCLI supports automation via both CLI JSON mode and MCP.
+For local AI coding agents, treat these as the API surface:
+
+- `framescli mcp` is the preferred structured integration
+- `--json` CLI commands are the fallback when MCP is unavailable
+
+A separate HTTP API is not included right now because it adds deployment, auth, and lifecycle overhead without improving the local agent workflow this project is built for.
 
 ### Agent Quickstart (Copy/Paste)
 
@@ -463,6 +471,7 @@ go test -tags integration ./internal/media
 - Product + usage docs: `README.md`
 - Ongoing build checklist: `docs/CHECKLIST.md`
 - Agent workflow recipes: `docs/AGENT_RECIPES.md`
+- Repo-local agent skill: `SKILL.md`
 - Media capture guide for future product demos: `docs/media/README_MEDIA.md`
 - Brand assets and logo checklist: `brand/BRAND.md`, `brand/CHECKLIST.md`
 - Contributing guide: `CONTRIBUTING.md`

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -261,6 +262,30 @@ func TestEstimateOutputs(t *testing.T) {
 	out := estimateOutputs(info, 4, "jpg", "both")
 	if out.FrameCount <= 0 || out.EstimatedMB <= 0 {
 		t.Fatalf("unexpected estimate: %+v", out)
+	}
+}
+
+func TestEstimateOutputsAutoFPS(t *testing.T) {
+	info := media.VideoInfo{DurationSec: 5, Width: 640, Height: 360}
+	out := estimateOutputs(info, 0, "png", "frames")
+	if out.FrameCount != 60 {
+		t.Fatalf("expected auto-fps estimate to target ~60 frames, got %+v", out)
+	}
+}
+
+func TestRunPreviewResultAutoFPS(t *testing.T) {
+	tmp := t.TempDir()
+	video := filepath.Join(tmp, "sample.mp4")
+	cmd := exec.Command("ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=24", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=16000", "-t", "5", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", video)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed generating sample video: %v\n%s", err, string(out))
+	}
+	got, err := runPreviewResult(video, 0, "png", "both")
+	if err != nil {
+		t.Fatalf("runPreviewResult returned error: %v", err)
+	}
+	if fps, ok := got["target_fps"].(float64); !ok || fps != 12 {
+		t.Fatalf("expected target_fps=12, got %#v", got["target_fps"])
 	}
 }
 

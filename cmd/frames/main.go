@@ -1275,9 +1275,18 @@ func extractBatchCommand() *cobra.Command {
 		Short: "Extract frames/audio from multiple videos (supports glob patterns)",
 		Args:  cobra.MinimumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			fps, _ := cmd.Flags().GetFloat64("fps")
-			if !cmd.Flags().Changed("fps") && appCfg.DefaultFPS > 0 {
-				fps = appCfg.DefaultFPS
+			fpsSpec, _ := cmd.Flags().GetString("fps")
+			if !cmd.Flags().Changed("fps") {
+				if appCfg.DefaultFPS > 0 {
+					fpsSpec = fmt.Sprintf("%g", appCfg.DefaultFPS)
+				} else {
+					fpsSpec = "auto"
+				}
+			}
+			fps, err := parseExtractFPSSpec(fpsSpec)
+			if err != nil {
+				failln("Invalid fps value. Use a positive number, 0, or auto.")
+				return
 			}
 			voice, _ := cmd.Flags().GetBool("voice")
 			frameFormat, _ := cmd.Flags().GetString("format")
@@ -1491,7 +1500,7 @@ func extractBatchCommand() *cobra.Command {
 			}
 		},
 	}
-	cmd.Flags().Float64("fps", appCfg.DefaultFPS, "Frames per second")
+	cmd.Flags().String("fps", fmt.Sprintf("%g", appCfg.DefaultFPS), "Frames per second, or 0/auto for automatic ~60-frame mode")
 	cmd.Flags().String("out", "", "Output root directory (one subdir per input video)")
 	cmd.Flags().Bool("voice", false, "Extract audio and generate transcript in the output folder")
 	cmd.Flags().String("format", appCfg.DefaultFormat, "Frame output format: png or jpg")
@@ -1526,7 +1535,7 @@ func extractBatchCommand() *cobra.Command {
 }
 
 func previewCommand() *cobra.Command {
-	var fps float64
+	var fpsSpec string
 	var format string
 	var mode string
 	cmd := &cobra.Command{
@@ -1556,20 +1565,39 @@ func previewCommand() *cobra.Command {
 				failf("video probe failed: %v\n", err)
 				return
 			}
-			if !cmd.Flags().Changed("fps") && appCfg.DefaultFPS > 0 {
-				fps = appCfg.DefaultFPS
+			if !cmd.Flags().Changed("fps") {
+				if appCfg.DefaultFPS > 0 {
+					fpsSpec = fmt.Sprintf("%g", appCfg.DefaultFPS)
+				} else {
+					fpsSpec = "auto"
+				}
 			}
 			if !cmd.Flags().Changed("format") && appCfg.DefaultFormat != "" {
 				format = appCfg.DefaultFormat
 			}
-			estimate := estimateOutputs(info, fps, format, mode)
+			fps, err := parseExtractFPSSpec(fpsSpec)
+			if err != nil {
+				err = fmt.Errorf("invalid fps value. use a positive number, 0, or auto")
+				if jsonOut {
+					emitAutomationJSON("preview", started, "error", map[string]string{"input": args[0]}, err)
+					markCommandFailure()
+					return
+				}
+				failf("%v\n", err)
+				return
+			}
+			resolvedFPS := fps
+			if resolvedFPS <= 0 {
+				resolvedFPS = autoFPSForDuration(info.DurationSec)
+			}
+			estimate := estimateOutputs(info, resolvedFPS, format, mode)
 			if jsonOut {
 				payload := map[string]any{
 					"input":       args[0],
 					"resolved":    videoPath,
 					"source_note": note,
 					"video_info":  info,
-					"target_fps":  fps,
+					"target_fps":  resolvedFPS,
 					"format":      format,
 					"mode":        mode,
 					"estimate":    estimate,
@@ -1587,7 +1615,7 @@ func previewCommand() *cobra.Command {
 			fmt.Printf("Resolution:  %dx%d\n", info.Width, info.Height)
 			fmt.Printf("Source FPS:  %.2f\n", info.FrameRate)
 			fmt.Printf("Mode:        %s\n", mode)
-			fmt.Printf("Target FPS:  %.2f\n", fps)
+			fmt.Printf("Target FPS:  %.2f\n", resolvedFPS)
 			fmt.Printf("Format:      %s\n", format)
 			fmt.Printf("Frames est:  %d\n", estimate.FrameCount)
 			fmt.Printf("Disk est:    ~%.1f MB\n", estimate.EstimatedMB)
@@ -1600,7 +1628,7 @@ func previewCommand() *cobra.Command {
 			}
 		},
 	}
-	cmd.Flags().Float64Var(&fps, "fps", appCfg.DefaultFPS, "Target extraction FPS for estimate")
+	cmd.Flags().StringVar(&fpsSpec, "fps", fmt.Sprintf("%g", appCfg.DefaultFPS), "Target extraction FPS for estimate, or 0/auto for automatic ~60-frame mode")
 	cmd.Flags().StringVar(&format, "format", appCfg.DefaultFormat, "Frame format estimate: png|jpg")
 	cmd.Flags().StringVar(&mode, "mode", "both", "Output mode estimate: frames|audio|both")
 	cmd.Flags().Bool("json", false, "Output machine-readable JSON")
@@ -1620,7 +1648,7 @@ func estimateOutputs(info media.VideoInfo, fps float64, format string, mode stri
 		mode = "both"
 	}
 	if fps <= 0 {
-		fps = 4
+		fps = autoFPSForDuration(info.DurationSec)
 	}
 	format = strings.ToLower(strings.TrimSpace(format))
 	if format == "" {
@@ -1662,6 +1690,9 @@ func runPreviewResult(input string, fps float64, format string, mode string) (ma
 	info, err := media.ProbeVideoInfo(videoPath)
 	if err != nil {
 		return nil, fmt.Errorf("video probe failed: %w", err)
+	}
+	if fps <= 0 {
+		fps = autoFPSForDuration(info.DurationSec)
 	}
 	estimate := estimateOutputs(info, fps, format, mode)
 	return map[string]any{
