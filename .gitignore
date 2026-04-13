@@ -2,6 +2,7 @@
 /dist/
 /frames/
 /tmp/
+/cmd/frames/frames/
 .gocache/
 *.out
 *.test

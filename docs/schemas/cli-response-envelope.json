@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/wraelen/framescli/schemas/cli-response-envelope.json",
+  "title": "FramesCLI JSON Response Envelope",
+  "description": "Common response structure for all --json CLI commands",
+  "type": "object",
+  "required": ["schema_version", "command", "status", "started_at", "completed_at"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "framescli.v1",
+      "description": "Schema version identifier"
+    },
+    "command": {
+      "type": "string",
+      "enum": ["extract", "extract-batch", "preview", "doctor", "transcribe-run", "open-last", "copy-last", "artifacts"],
+      "description": "Command that generated this response"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["success", "partial", "failed"],
+      "description": "Overall command status"
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Command start timestamp (RFC3339)"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Command completion timestamp (RFC3339)"
+    },
+    "data": {
+      "type": "object",
+      "description": "Command-specific result payload (structure varies by command)"
+    },
+    "error": {
+      "type": "object",
+      "description": "Present when status is 'partial' or 'failed'",
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Stable error code (always 'command_failed')"
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable error description"
+        },
+        "class": {
+          "type": "string",
+          "enum": ["validation", "execution", "not_found", "path_not_allowed", "timeout", "cancelled"],
+          "description": "Error category for agent handling"
+        },
+        "recovery": {
+          "type": "string",
+          "description": "Suggested recovery action for user/agent"
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "Whether retrying the operation might succeed"
+        }
+      }
+    }
+  }
+}

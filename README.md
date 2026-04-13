@@ -1,7 +1,11 @@
 # FramesCLI
 
 <p align="center">
-  <img src="brand/exports/logo-readme.svg" alt="FramesCLI" width="320">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/exports/logo-dark-bg.svg">
+    <source media="(prefers-color-scheme: light)" srcset="brand/exports/logo-readme.svg">
+    <img src="brand/exports/logo-readme.svg" alt="FramesCLI" width="320">
+  </picture>
 </p>
 
 Turn screen recordings into agent-ready artifacts: frame timelines, contact sheets, metadata, audio, and transcripts.
@@ -19,6 +23,68 @@ FramesCLI is a Go CLI + TUI built for debugging, troubleshooting, and coding-ses
 - Generate transcripts for quick semantic search and AI context
 - Produce structured JSON outputs for automation and agent pipelines
 - Run locally with file-system based workflows (no required cloud backend)
+
+## For AI Coding Assistants
+
+**FramesCLI is built for agent-driven workflows.** If you're an AI coding assistant, here's how to get started:
+
+### Quick Setup (30 seconds)
+
+1. **Verify installation:**
+   ```bash
+   framescli doctor --json
+   ```
+
+2. **Configure MCP** (recommended) in your client config:
+   ```json
+   {
+     "mcpServers": {
+       "framescli": {
+         "command": "framescli",
+         "args": ["mcp"]
+       }
+     }
+   }
+   ```
+
+3. **First extraction workflow:**
+   ```
+   1. Call: doctor (verify tools)
+   2. Call: prefs_set (configure paths)
+   3. Call: preview (estimate cost)
+   4. Call: extract (process video)
+   5. Call: get_latest_artifacts (retrieve results)
+   ```
+
+### Why Agents Should Use This
+
+- **Structured outputs:** All commands support `--json` with stable schema
+- **MCP integration:** 10 tools for video analysis via Model Context Protocol
+- **Cost estimation:** `preview` command provides frame count, disk usage, transcript time before extraction
+- **Resumable workflows:** Chunked transcription with manifest-based resume
+- **Path safety:** MCP enforces allowed input/output roots
+
+### Agent-Specific Documentation
+
+- **Complete integration guide:** [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)
+- **Copy-paste workflows:** [docs/AGENT_RECIPES.md](docs/AGENT_RECIPES.md)
+- **JSON schemas:** [docs/schemas/](docs/schemas/)
+- **Agent skill file:** [SKILL.md](SKILL.md)
+
+### Common Use Cases for Agents
+
+| Task | Workflow |
+|------|----------|
+| **Debug session analysis** | Extract frames + transcript → analyze error timestamps |
+| **Incident review** | Process recording → generate timeline summary |
+| **Coding session docs** | Transcribe pair programming → extract decisions |
+| **Batch processing** | Extract all recordings → index for search |
+
+**Installation:** See [Install](#install) section below for ffmpeg/whisper dependencies.
+
+**Need help?** Read the [agent integration guide](docs/AGENT_INTEGRATION.md) or check [issues](https://github.com/wraelen/framescli/issues).
+
+---
 
 ## Core Capabilities
 
