@@ -148,11 +148,11 @@ func newSetupWizardModel(cfg appconfig.Config) setupWizardModel {
 		},
 		{
 			label:   "Performance mode",
-			help:    "balanced is the safest default. fast lowers overhead; safe favors compatibility.",
+			help:    "balanced is the safest default. laptop-safe lowers cost; high-fidelity increases sampling.",
 			section: "Extraction Defaults",
 			kind:    setupFieldChoice,
-			choices: []string{"safe", "balanced", "fast"},
-			value:   defaultChoice(cfg.PerformanceMode, []string{"safe", "balanced", "fast"}),
+			choices: []string{"laptop-safe", "balanced", "high-fidelity"},
+			value:   defaultChoice(cfg.PerformanceMode, []string{"laptop-safe", "balanced", "high-fidelity"}),
 		},
 		{
 			label:   "Transcription backend",

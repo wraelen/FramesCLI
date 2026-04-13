@@ -80,9 +80,9 @@ func Default() Config {
 		TUIWelcomeSeen:    false,
 		TUIVimMode:        false,
 		PresetProfiles: map[string]PresetProfile{
-			"fast":          {Preset: "fast", Format: "jpg", Voice: false, NoSheet: true},
+			"laptop-safe":   {Preset: "laptop-safe", Format: "jpg", Voice: false, NoSheet: false},
 			"balanced":      {Preset: "balanced", Format: "png", Voice: false, NoSheet: false},
-			"high-fidelity": {Preset: "safe", Format: "png", Voice: true, NoSheet: false},
+			"high-fidelity": {Preset: "high-fidelity", Format: "png", Voice: true, NoSheet: false},
 		},
 		AgentInputDirs:   []string{},
 		AgentOutputRoot:  "frames",
@@ -227,12 +227,15 @@ func normalize(cfg *Config) {
 	}
 	cfg.PerformanceMode = strings.ToLower(strings.TrimSpace(cfg.PerformanceMode))
 	switch cfg.PerformanceMode {
-	case "", "safe", "balanced", "fast":
+	case "", "safe", "laptop-safe", "balanced", "high-fidelity", "fast":
 	default:
 		cfg.PerformanceMode = "balanced"
 	}
 	if cfg.PerformanceMode == "" {
 		cfg.PerformanceMode = "balanced"
+	}
+	if cfg.PerformanceMode == "safe" {
+		cfg.PerformanceMode = "laptop-safe"
 	}
 	if cfg.WhisperBin == "" {
 		cfg.WhisperBin = "whisper"
@@ -391,6 +394,7 @@ func normalizeProfiles(in map[string]PresetProfile) map[string]PresetProfile {
 		return Default().PresetProfiles
 	}
 	out := map[string]PresetProfile{}
+	defaults := Default().PresetProfiles
 	for name, p := range in {
 		k := strings.ToLower(strings.TrimSpace(name))
 		if k == "" {
@@ -398,12 +402,15 @@ func normalizeProfiles(in map[string]PresetProfile) map[string]PresetProfile {
 		}
 		p.Preset = strings.ToLower(strings.TrimSpace(p.Preset))
 		switch p.Preset {
-		case "", "safe", "balanced", "fast":
+		case "", "safe", "laptop-safe", "balanced", "high-fidelity", "fast":
 			if p.Preset == "" {
 				p.Preset = "balanced"
 			}
 		default:
 			p.Preset = "balanced"
+		}
+		if p.Preset == "safe" {
+			p.Preset = "laptop-safe"
 		}
 		p.Format = strings.ToLower(strings.TrimSpace(p.Format))
 		switch p.Format {
@@ -417,7 +424,33 @@ func normalizeProfiles(in map[string]PresetProfile) map[string]PresetProfile {
 		default:
 			p.Format = "png"
 		}
+		// Migrate built-in profile keys forward when older config files still
+		// carry legacy preset values under the new names.
+		switch k {
+		case "laptop-safe":
+			p.Preset = "laptop-safe"
+			if strings.TrimSpace(p.Format) == "" {
+				p.Format = defaults["laptop-safe"].Format
+			}
+		case "balanced":
+			p.Preset = "balanced"
+			if strings.TrimSpace(p.Format) == "" {
+				p.Format = defaults["balanced"].Format
+			}
+		case "high-fidelity":
+			p.Preset = "high-fidelity"
+			if strings.TrimSpace(p.Format) == "" {
+				p.Format = defaults["high-fidelity"].Format
+			}
+			p.Voice = defaults["high-fidelity"].Voice
+			p.NoSheet = defaults["high-fidelity"].NoSheet
+		}
 		out[k] = p
+	}
+	for name, profile := range defaults {
+		if _, ok := out[name]; !ok {
+			out[name] = profile
+		}
 	}
 	if len(out) == 0 {
 		return Default().PresetProfiles

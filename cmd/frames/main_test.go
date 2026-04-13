@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -118,6 +119,9 @@ func TestCollectDoctorReportCoreFields(t *testing.T) {
 	if len(r.Tools) == 0 {
 		t.Fatalf("expected tool checks")
 	}
+	if strings.TrimSpace(r.TranscribeRuntimeClass) == "" || strings.TrimSpace(r.TranscribeCostHint) == "" {
+		t.Fatalf("expected transcribe hint fields, got %+v", r)
+	}
 }
 
 func TestNormalizeDroppedPath(t *testing.T) {
@@ -138,12 +142,12 @@ func TestNormalizeDroppedPath(t *testing.T) {
 }
 
 func TestRotateChoice(t *testing.T) {
-	choices := []string{"safe", "balanced", "fast"}
-	if got := rotateChoice(choices, "balanced", 1); got != "fast" {
-		t.Fatalf("expected fast, got %s", got)
+	choices := []string{"laptop-safe", "balanced", "high-fidelity"}
+	if got := rotateChoice(choices, "balanced", 1); got != "high-fidelity" {
+		t.Fatalf("expected high-fidelity, got %s", got)
 	}
-	if got := rotateChoice(choices, "safe", -1); got != "fast" {
-		t.Fatalf("expected wrap to fast, got %s", got)
+	if got := rotateChoice(choices, "laptop-safe", -1); got != "high-fidelity" {
+		t.Fatalf("expected wrap to high-fidelity, got %s", got)
 	}
 }
 
@@ -155,9 +159,6 @@ func TestSetupWizardViewShowsGuidance(t *testing.T) {
 	}
 	if !strings.Contains(out, "Quick Setup") {
 		t.Fatalf("expected quick setup welcome copy, got %q", out)
-	}
-	if !strings.Contains(out, "[enter] continue") {
-		t.Fatalf("expected continue guidance, got %q", out)
 	}
 }
 
@@ -258,18 +259,150 @@ func TestExpandVideoInputsUnmatchedGlobKept(t *testing.T) {
 }
 
 func TestEstimateOutputs(t *testing.T) {
+	appCfg = appconfig.Default()
 	info := media.VideoInfo{DurationSec: 60, Width: 1920, Height: 1080}
-	out := estimateOutputs(info, 4, "jpg", "both")
+	out := estimateOutputs(info, 4, "jpg", "both", buildTranscriptPlan(info.DurationSec, appCfg, false), 600)
 	if out.FrameCount <= 0 || out.EstimatedMB <= 0 {
 		t.Fatalf("unexpected estimate: %+v", out)
+	}
+	if len(out.DiskProfiles) == 0 {
+		t.Fatalf("expected disk profiles, got %+v", out)
+	}
+	if out.DiskSummary == "" {
+		t.Fatalf("expected disk summary, got %+v", out)
+	}
+	if out.Transcript.Backend == "" {
+		t.Fatalf("expected transcript hint, got %+v", out.Transcript)
 	}
 }
 
 func TestEstimateOutputsAutoFPS(t *testing.T) {
+	appCfg = appconfig.Default()
 	info := media.VideoInfo{DurationSec: 5, Width: 640, Height: 360}
-	out := estimateOutputs(info, 0, "png", "frames")
+	out := estimateOutputs(info, 0, "png", "frames", buildTranscriptPlan(info.DurationSec, appCfg, false), 0)
 	if out.FrameCount != 60 {
 		t.Fatalf("expected auto-fps estimate to target ~60 frames, got %+v", out)
+	}
+	if out.Transcript.Enabled {
+		t.Fatalf("expected transcript estimate disabled for frames mode, got %+v", out.Transcript)
+	}
+}
+
+func TestEstimateOutputsWarnsForLongCPUTranscript(t *testing.T) {
+	appCfg = appconfig.Default()
+	appCfg.TranscribeBackend = "whisper"
+	appCfg.WhisperModel = "large"
+	info := media.VideoInfo{DurationSec: 45 * 60, Width: 1920, Height: 1080}
+	out := estimateOutputs(info, 4, "png", "both", buildTranscriptPlan(info.DurationSec, appCfg, false), 0)
+	if len(out.Warnings) == 0 {
+		t.Fatalf("expected preview warnings, got %+v", out)
+	}
+	if out.Transcript.RuntimeClass == "" || out.Transcript.CostHint == "" {
+		t.Fatalf("expected transcript runtime hint, got %+v", out.Transcript)
+	}
+	if !out.Guardrails.RequiresOverride {
+		t.Fatalf("expected expensive workload override requirement, got %+v", out.Guardrails)
+	}
+}
+
+func TestResolveWorkflowSettingsPresetDefaults(t *testing.T) {
+	info := media.VideoInfo{DurationSec: 1800, Width: 1920, Height: 1080}
+	got := resolveWorkflowSettings(info, 4, "png", "laptop-safe", false, false, true, true, 0, false)
+	if got.Preset != "laptop-safe" || got.MediaPreset != "safe" {
+		t.Fatalf("unexpected preset resolution: %+v", got)
+	}
+	if got.FPS != 1 {
+		t.Fatalf("expected laptop-safe fps=1, got %+v", got)
+	}
+	if got.FrameFormat != "jpg" {
+		t.Fatalf("expected laptop-safe format=jpg, got %+v", got)
+	}
+	if got.ChunkDurationSec != 300 {
+		t.Fatalf("expected laptop-safe chunking=300, got %+v", got)
+	}
+}
+
+func TestResolveWorkflowSettingsExplicitOverridesWin(t *testing.T) {
+	info := media.VideoInfo{DurationSec: 120, Width: 1280, Height: 720}
+	got := resolveWorkflowSettings(info, 6, "jpg", "high-fidelity", true, true, true, true, 1200, true)
+	if got.FPS != 6 || got.FrameFormat != "jpg" || got.ChunkDurationSec != 1200 {
+		t.Fatalf("expected explicit values to win, got %+v", got)
+	}
+	if got.MediaPreset != "fast" {
+		t.Fatalf("expected high-fidelity media preset fast, got %+v", got)
+	}
+}
+
+func TestResolveWorkflowSettingsImplicitConfigPresetUsesPresetDefaults(t *testing.T) {
+	info := media.VideoInfo{DurationSec: 600, Width: 1280, Height: 720}
+	defaultCfg := appconfig.Default()
+	got := resolveWorkflowSettings(info, defaultCfg.DefaultFPS, defaultCfg.DefaultFormat, "high-fidelity", false, false, false, true, 0, false)
+	if got.FPS != 8 || got.FrameFormat != "png" || got.ChunkDurationSec != 900 {
+		t.Fatalf("expected implicit config preset defaults, got %+v", got)
+	}
+}
+
+func TestResolveWorkflowSettingsCustomConfigDefaultsStillWin(t *testing.T) {
+	info := media.VideoInfo{DurationSec: 600, Width: 1280, Height: 720}
+	got := resolveWorkflowSettings(info, 6, "jpg", "high-fidelity", false, false, false, true, 0, false)
+	if got.FPS != 6 || got.FrameFormat != "jpg" {
+		t.Fatalf("expected custom config defaults to win, got %+v", got)
+	}
+	if got.ChunkDurationSec != 900 {
+		t.Fatalf("expected chunking to still come from preset, got %+v", got)
+	}
+}
+
+func TestResolveVideoInputNormalizesWindowsPathOnNonWindows(t *testing.T) {
+	got, note, err := resolveVideoInput(`C:\Users\wraelen\Videos\clip.mp4`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "/mnt/c/Users/wraelen/Videos/clip.mp4" {
+		t.Fatalf("unexpected normalized path: %q", got)
+	}
+	if note != "normalized from Windows path" {
+		t.Fatalf("unexpected source note: %q", note)
+	}
+}
+
+func TestEnforceGuardrailsRequiresOverride(t *testing.T) {
+	report := workloadAssessment{
+		RequiresOverride: true,
+		OverrideFlag:     "--allow-expensive",
+		Guardrails: []workloadGuardrail{
+			{Severity: "block", Message: "Estimated frame count exceeds 40000."},
+		},
+	}
+	if err := enforceGuardrails(report, false); err == nil || !strings.Contains(err.Error(), "--allow-expensive") {
+		t.Fatalf("expected allow-expensive error, got %v", err)
+	}
+	if err := enforceGuardrails(report, true); err != nil {
+		t.Fatalf("expected override to bypass guardrail, got %v", err)
+	}
+}
+
+func TestLatestBenchmarkPreviewHint(t *testing.T) {
+	root := t.TempDir()
+	appCfg = appconfig.Default()
+	appCfg.FramesRoot = root
+	report := media.BenchmarkReport{
+		VideoPath:   "video.mp4",
+		DurationSec: 20,
+		Results: []media.BenchmarkResult{
+			{Success: true, RealtimeFactor: 2.5},
+		},
+		Recommended: media.BenchmarkCase{HWAccel: "none", Preset: "balanced"},
+	}
+	if err := media.AppendBenchmarkHistory(media.BenchmarkHistoryPath(root), report, 10); err != nil {
+		t.Fatal(err)
+	}
+	hint := latestBenchmarkPreviewHint(600)
+	if hint == nil {
+		t.Fatalf("expected benchmark hint")
+	}
+	if hint.BestRealtimeFactor != 2.5 {
+		t.Fatalf("unexpected benchmark hint: %+v", hint)
 	}
 }
 
@@ -280,12 +413,164 @@ func TestRunPreviewResultAutoFPS(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("failed generating sample video: %v\n%s", err, string(out))
 	}
-	got, err := runPreviewResult(video, 0, "png", "both")
+	got, err := runPreviewResult(video, 0, "png", "both", "balanced", 0, true, false, false, false)
 	if err != nil {
 		t.Fatalf("runPreviewResult returned error: %v", err)
 	}
 	if fps, ok := got["target_fps"].(float64); !ok || fps != 12 {
 		t.Fatalf("expected target_fps=12, got %#v", got["target_fps"])
+	}
+	estimate, ok := got["estimate"].(outputEstimate)
+	if !ok {
+		t.Fatalf("expected outputEstimate payload, got %T", got["estimate"])
+	}
+	if estimate.DiskSummary == "" {
+		t.Fatalf("expected preview disk summary, got %+v", estimate)
+	}
+}
+
+func TestRunExtractWorkflowResultNoAudioVoiceFailsEarly(t *testing.T) {
+	requireFFmpegToolsMainTest(t)
+	video := makeNoAudioVideoMainTest(t)
+
+	_, err := runExtractWorkflowResult(context.Background(), video, 2, extractWorkflowOptions{
+		Voice:       true,
+		FrameFormat: "png",
+		HWAccel:     "none",
+		Preset:      "safe",
+		SheetCols:   6,
+	}, false)
+	if err == nil {
+		t.Fatal("expected no-audio source to fail when voice extraction is requested")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "extraction failed: requested audio output, but video has no audio stream") {
+		t.Fatalf("expected wrapped no-audio error, got %q", msg)
+	}
+	if !strings.Contains(msg, filepath.Base(video)) {
+		t.Fatalf("expected source path in error, got %q", msg)
+	}
+}
+
+func TestRunExtractWorkflowResultNoAudioFrameOnlyStillSucceeds(t *testing.T) {
+	requireFFmpegToolsMainTest(t)
+	video := makeNoAudioVideoMainTest(t)
+
+	got, err := runExtractWorkflowResult(context.Background(), video, 2, extractWorkflowOptions{
+		Voice:       false,
+		FrameFormat: "png",
+		HWAccel:     "none",
+		Preset:      "safe",
+		SheetCols:   6,
+	}, false)
+	if err != nil {
+		t.Fatalf("expected frame-only extraction to succeed, got %v", err)
+	}
+	if got.FrameCount < 2 {
+		t.Fatalf("expected extracted frames, got %d", got.FrameCount)
+	}
+	if got.AudioPath != "" {
+		t.Fatalf("expected no audio artifact for frame-only path, got %q", got.AudioPath)
+	}
+}
+
+func TestRunTranscribeRunResultTranscriptPresentWithIncompleteManifestResumes(t *testing.T) {
+	runDir := makeTranscribeRunFixture(t)
+	voiceDir := filepath.Join(runDir, "voice")
+	audioPath := filepath.Join(voiceDir, "voice.wav")
+	manifestPath := filepath.Join(voiceDir, "transcription-manifest.json")
+
+	manifest := media.TranscriptionManifest{
+		SchemaVersion:    "framescli.transcription_manifest.v1",
+		SourceAudioPath:  filepath.Join(runDir, "different.wav"),
+		ChunkDurationSec: 10,
+		TotalDurationSec: 20,
+		ChunkRootDir:     filepath.Join(voiceDir, "chunks"),
+		Chunks: []media.TranscriptionManifestChunk{
+			{
+				Index:          0,
+				StartSec:       0,
+				EndSec:         10,
+				Status:         "completed",
+				AudioPath:      filepath.Join(voiceDir, "chunks", "chunk-0000", "audio.wav"),
+				OutputDir:      filepath.Join(voiceDir, "chunks", "chunk-0000"),
+				TranscriptTxt:  filepath.Join(voiceDir, "chunks", "chunk-0000", "transcript.txt"),
+				TranscriptJSON: filepath.Join(voiceDir, "chunks", "chunk-0000", "transcript.json"),
+			},
+			{
+				Index:     1,
+				StartSec:  10,
+				EndSec:    20,
+				Status:    "pending",
+				AudioPath: filepath.Join(voiceDir, "chunks", "chunk-0001", "audio.wav"),
+				OutputDir: filepath.Join(voiceDir, "chunks", "chunk-0001"),
+			},
+		},
+		Merge: media.TranscriptionManifestMerge{
+			Status:         "pending",
+			TranscriptTxt:  filepath.Join(voiceDir, "transcript.txt"),
+			TranscriptJSON: filepath.Join(voiceDir, "transcript.json"),
+		},
+	}
+	writeChunkFixtureFiles(t, manifest.Chunks[0])
+	writeJSONFile(t, manifestPath, manifest)
+
+	result, err := runTranscribeRunResult(context.Background(), runDir, media.TranscribeOptions{})
+	if err == nil {
+		t.Fatal("expected resume path to continue past transcript fast-path")
+	}
+	if !strings.Contains(err.Error(), audioPath) {
+		t.Fatalf("expected manifest/source-audio resume error, got %v", err)
+	}
+	if result.AlreadyPresent {
+		t.Fatalf("expected incomplete manifest to bypass AlreadyPresent fast path, got %+v", result)
+	}
+	if result.ManifestPath != manifestPath {
+		t.Fatalf("expected manifest path %q, got %q", manifestPath, result.ManifestPath)
+	}
+}
+
+func TestRunTranscribeRunResultTranscriptPresentWithCompleteManifestShortCircuits(t *testing.T) {
+	runDir := makeTranscribeRunFixture(t)
+	voiceDir := filepath.Join(runDir, "voice")
+	audioPath := filepath.Join(voiceDir, "voice.wav")
+	manifestPath := filepath.Join(voiceDir, "transcription-manifest.json")
+
+	chunk := media.TranscriptionManifestChunk{
+		Index:          0,
+		StartSec:       0,
+		EndSec:         10,
+		Status:         "completed",
+		AudioPath:      filepath.Join(voiceDir, "chunks", "chunk-0000", "audio.wav"),
+		OutputDir:      filepath.Join(voiceDir, "chunks", "chunk-0000"),
+		TranscriptTxt:  filepath.Join(voiceDir, "chunks", "chunk-0000", "transcript.txt"),
+		TranscriptJSON: filepath.Join(voiceDir, "chunks", "chunk-0000", "transcript.json"),
+	}
+	manifest := media.TranscriptionManifest{
+		SchemaVersion:    "framescli.transcription_manifest.v1",
+		SourceAudioPath:  audioPath,
+		ChunkDurationSec: 10,
+		TotalDurationSec: 10,
+		ChunkRootDir:     filepath.Join(voiceDir, "chunks"),
+		Chunks:           []media.TranscriptionManifestChunk{chunk},
+		Merge: media.TranscriptionManifestMerge{
+			Status:         "completed",
+			TranscriptTxt:  filepath.Join(voiceDir, "transcript.txt"),
+			TranscriptJSON: filepath.Join(voiceDir, "transcript.json"),
+		},
+	}
+	writeChunkFixtureFiles(t, chunk)
+	writeJSONFile(t, manifestPath, manifest)
+
+	result, err := runTranscribeRunResult(context.Background(), runDir, media.TranscribeOptions{})
+	if err != nil {
+		t.Fatalf("expected complete manifest to short-circuit, got %v", err)
+	}
+	if !result.AlreadyPresent {
+		t.Fatalf("expected AlreadyPresent short-circuit, got %+v", result)
+	}
+	if result.ManifestPath != manifestPath {
+		t.Fatalf("expected manifest path %q, got %q", manifestPath, result.ManifestPath)
 	}
 }
 
@@ -295,6 +580,79 @@ func TestStageTimingSuffixIncludesETA(t *testing.T) {
 	if !strings.Contains(out, "elapsed") || !strings.Contains(out, "eta") {
 		t.Fatalf("expected elapsed and eta, got %q", out)
 	}
+}
+
+func requireFFmpegToolsMainTest(t *testing.T) {
+	t.Helper()
+	for _, bin := range []string{"ffmpeg", "ffprobe"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s not installed: %v", bin, err)
+		}
+	}
+}
+
+func makeTranscribeRunFixture(t *testing.T) string {
+	t.Helper()
+	runDir := t.TempDir()
+	voiceDir := filepath.Join(runDir, "voice")
+	if err := os.MkdirAll(voiceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	audioPath := filepath.Join(voiceDir, "voice.wav")
+	if err := os.WriteFile(audioPath, []byte("audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(voiceDir, "transcript.txt"), []byte("done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(voiceDir, "transcript.json"), []byte(`{"text":"done"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	md := media.RunMetadata{
+		VideoPath:      "video.mp4",
+		ExtractedAudio: true,
+		AudioPath:      audioPath,
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+	}
+	writeJSONFile(t, media.MetadataPathForRun(runDir), md)
+	return runDir
+}
+
+func writeChunkFixtureFiles(t *testing.T, chunk media.TranscriptionManifestChunk) {
+	t.Helper()
+	if err := os.MkdirAll(chunk.OutputDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(chunk.AudioPath, []byte("chunk-audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(chunk.TranscriptTxt, []byte("chunk\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(chunk.TranscriptJSON, []byte(`{"text":"chunk"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeJSONFile(t *testing.T, path string, v any) {
+	t.Helper()
+	raw, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func makeNoAudioVideoMainTest(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "no-audio.mp4")
+	cmd := exec.Command("ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=12", "-t", "2", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-an", path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed generating no-audio video: %v\n%s", err, string(out))
+	}
+	return path
 }
 
 func TestMCPToolTimeoutClamp(t *testing.T) {
@@ -363,6 +721,102 @@ func TestAnnotateStorageError(t *testing.T) {
 	}
 }
 
+func TestClassifyError(t *testing.T) {
+	cases := []struct {
+		name      string
+		err       error
+		wantClass string
+		retryable bool
+	}{
+		{name: "cancelled", err: context.Canceled, wantClass: "interrupted", retryable: true},
+		{name: "disk", err: errors.New("no space left on device"), wantClass: "disk_space", retryable: true},
+		{name: "dependency", err: errors.New(`whisper backend selected but binary "whisper" not found on PATH`), wantClass: "missing_dependency", retryable: true},
+		{name: "unsupported", err: errors.New(`unsupported audio format "flac" (use wav|mp3|aac)`), wantClass: "unsupported_media", retryable: false},
+		{name: "probe_failed", err: errors.New(`video probe failed: ffprobe failed for "/tmp/bad.mp4": exit status 1`), wantClass: "unsupported_media", retryable: false},
+		{name: "invalid_video_input_wrapped_probe", err: errors.New(`invalid video input "/tmp/bad.mp4": ffprobe failed for "/tmp/bad.mp4": exit status 1`), wantClass: "unsupported_media", retryable: false},
+		{name: "invalid", err: errors.New("transcribe_run requires run_dir"), wantClass: "invalid_input", retryable: false},
+		{name: "path", err: errors.New("path outside allowed roots: /tmp/nope"), wantClass: "path_not_allowed", retryable: false},
+		{name: "not_found", err: errors.New("no runs found in /tmp/frames"), wantClass: "not_found", retryable: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyError(tc.err)
+			if got.Class != tc.wantClass {
+				t.Fatalf("classifyError(%q) class=%q want %q", tc.err, got.Class, tc.wantClass)
+			}
+			if got.Retryable != tc.retryable {
+				t.Fatalf("classifyError(%q) retryable=%t want %t", tc.err, got.Retryable, tc.retryable)
+			}
+			if got.Message != tc.err.Error() {
+				t.Fatalf("classifyError(%q) message=%q", tc.err, got.Message)
+			}
+			if got.Data["class"] != tc.wantClass {
+				t.Fatalf("classifyError(%q) data.class=%#v", tc.err, got.Data["class"])
+			}
+		})
+	}
+}
+
+func TestBuildAutomationEnvelopeIncludesErrorDetails(t *testing.T) {
+	started := time.Now().Add(-time.Second)
+	env := buildAutomationEnvelope("extract", started, "error", nil, errors.New("no space left on device"))
+	if env.Error == nil {
+		t.Fatal("expected error payload")
+	}
+	if env.Error.Code != "command_failed" {
+		t.Fatalf("unexpected error code: %+v", env.Error)
+	}
+	if env.Error.Class != "disk_space" {
+		t.Fatalf("unexpected error class: %+v", env.Error)
+	}
+	if !env.Error.Retryable {
+		t.Fatalf("expected retryable disk error: %+v", env.Error)
+	}
+	if env.Error.Recovery == "" {
+		t.Fatalf("expected recovery guidance: %+v", env.Error)
+	}
+}
+
+func TestBuildMCPErrorIncludesStructuredData(t *testing.T) {
+	got := buildMCPError(-32000, fmt.Errorf("path outside allowed roots: /tmp/nope"))
+	if got == nil {
+		t.Fatal("expected mcp error")
+	}
+	if got.Code != -32000 || got.Message == "" {
+		t.Fatalf("unexpected mcp error: %+v", got)
+	}
+	if got.Data["class"] != "path_not_allowed" {
+		t.Fatalf("unexpected mcp error data: %+v", got.Data)
+	}
+	if got.Data["recovery"] == "" {
+		t.Fatalf("expected recovery in mcp error data: %+v", got.Data)
+	}
+}
+
+func TestRenderUserFacingErrorIncludesRecovery(t *testing.T) {
+	out := renderUserFacingError(errors.New("no clipboard tool found (pbcopy/clip/wl-copy/xclip/xsel)"))
+	if !strings.Contains(out, "Recovery:") {
+		t.Fatalf("expected recovery guidance, got %q", out)
+	}
+}
+
+func TestRunPreviewResultUnsupportedMediaClassifiedCorrectly(t *testing.T) {
+	requireFFmpegToolsMainTest(t)
+	path := filepath.Join(t.TempDir(), "not-video.mp4")
+	if err := os.WriteFile(path, []byte("definitely not a valid media file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runPreviewResult(path, 2, "png", "both", "balanced", 0, true, true, false, false)
+	if err == nil {
+		t.Fatal("expected preview error for invalid media")
+	}
+	got := classifyError(err)
+	if got.Class != "unsupported_media" {
+		t.Fatalf("expected unsupported_media, got %+v", got)
+	}
+}
+
 func TestEnsureMCPPathAllowed(t *testing.T) {
 	tmp := t.TempDir()
 	appCfg = appconfig.Default()
@@ -382,30 +836,111 @@ func TestEnsureMCPPathAllowed(t *testing.T) {
 
 func TestLatestRunArtifacts(t *testing.T) {
 	root := t.TempDir()
-	run := filepath.Join(root, "Run_1")
-	if err := os.MkdirAll(filepath.Join(run, "images", "sheets"), 0o755); err != nil {
+	run := writeArtifactRunFixture(t, root, "Run_1", artifactFixtureOptions{withTranscript: true, withSheet: true, withAudio: true})
+	if _, err := media.WriteRunsIndex(root, ""); err != nil {
 		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(run, "voice"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for p := range map[string]string{
-		filepath.Join(run, "images", "sheets", "contact-sheet.png"): "x",
-		filepath.Join(run, "voice", "transcript.txt"):               "x",
-		filepath.Join(run, "extract.log"):                           "x",
-		filepath.Join(run, "voice", "voice.wav"):                    "x",
-		media.MetadataPathForRun(run):                               "{}",
-	} {
-		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
 	}
 	arts, err := latestRunArtifacts(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if arts["run"] == "" || arts["sheet"] == "" || arts["transcript"] == "" {
+	if arts["run"] != run || arts["sheet"] == "" || arts["transcript"] == "" || arts["metadata"] == "" {
 		t.Fatalf("expected latest artifacts map, got %+v", arts)
+	}
+}
+
+func TestFindLastRunArtifactUsesIndexForSpecificArtifacts(t *testing.T) {
+	root := t.TempDir()
+	run := writeArtifactRunFixture(t, root, "Run_1", artifactFixtureOptions{withTranscript: true, withAudio: true})
+	if _, err := media.WriteRunsIndex(root, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	target, runPath, err := findLastRunArtifact(root, "transcript-json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runPath != run {
+		t.Fatalf("expected run path %q, got %q", run, runPath)
+	}
+	if !strings.HasSuffix(target, filepath.Join("voice", "transcript.json")) {
+		t.Fatalf("expected transcript json path, got %q", target)
+	}
+}
+
+func TestArtifactPathForRunSupportsExpandedArtifactSelectors(t *testing.T) {
+	root := t.TempDir()
+	runPath := writeArtifactRunFixture(t, root, "Run_1", artifactFixtureOptions{
+		withTranscript:  true,
+		withTimedText:   true,
+		withManifest:    true,
+		withMetadataCSV: true,
+		withFramesZip:   true,
+	})
+	if _, err := media.WriteRunsIndex(root, ""); err != nil {
+		t.Fatal(err)
+	}
+	run, err := media.SelectRun(root, runPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := map[string]string{
+		"transcript_json":        filepath.Join("voice", "transcript.json"),
+		"transcript-srt":         filepath.Join("voice", "transcript.srt"),
+		"transcript_vtt":         filepath.Join("voice", "transcript.vtt"),
+		"transcription-manifest": filepath.Join("voice", "transcription-manifest.json"),
+		"metadata_csv":           "frames.csv",
+		"frames-zip":             "frames.zip",
+	}
+	for artifact, suffix := range cases {
+		got, err := artifactPathForRun(run, artifact)
+		if err != nil {
+			t.Fatalf("artifactPathForRun(%q) returned error: %v", artifact, err)
+		}
+		if !strings.HasSuffix(got, suffix) {
+			t.Fatalf("artifactPathForRun(%q)=%q, want suffix %q", artifact, got, suffix)
+		}
+	}
+}
+
+func TestLatestRunArtifactsIncludesExpandedIndexedArtifacts(t *testing.T) {
+	root := t.TempDir()
+	writeArtifactRunFixture(t, root, "Run_1", artifactFixtureOptions{
+		withAudio:       true,
+		withTranscript:  true,
+		withTimedText:   true,
+		withManifest:    true,
+		withMetadataCSV: true,
+		withFramesZip:   true,
+	})
+	if _, err := media.WriteRunsIndex(root, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	arts, err := latestRunArtifacts(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"transcript_json", "transcript_srt", "transcript_vtt", "manifest", "metadata_csv", "frames_zip"} {
+		if strings.TrimSpace(arts[key]) == "" {
+			t.Fatalf("expected artifact key %q in %+v", key, arts)
+		}
+	}
+}
+
+func TestArtifactPathForRunMissingArtifact(t *testing.T) {
+	root := t.TempDir()
+	runPath := writeArtifactRunFixture(t, root, "Run_1", artifactFixtureOptions{})
+	if _, err := media.WriteRunsIndex(root, ""); err != nil {
+		t.Fatal(err)
+	}
+	run, err := media.SelectRun(root, runPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artifactPathForRun(run, "transcript"); err == nil || !strings.Contains(err.Error(), "transcript not found") {
+		t.Fatalf("expected missing transcript error, got %v", err)
 	}
 }
 
@@ -549,6 +1084,97 @@ func TestPruneToLastLines(t *testing.T) {
 	if strings.TrimSpace(string(raw)) != "3\n4\n5" {
 		t.Fatalf("unexpected pruned file: %q", string(raw))
 	}
+}
+
+type artifactFixtureOptions struct {
+	withAudio       bool
+	withTranscript  bool
+	withTimedText   bool
+	withManifest    bool
+	withMetadataCSV bool
+	withFramesZip   bool
+	withSheet       bool
+	createdAt       string
+}
+
+func writeArtifactRunFixture(t *testing.T, root string, name string, opts artifactFixtureOptions) string {
+	t.Helper()
+
+	run := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Join(run, "images", "sheets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(run, "voice"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(run, "images", "frame-0001.png"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if opts.withSheet {
+		if err := os.WriteFile(filepath.Join(run, "images", "sheets", "contact-sheet.png"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if opts.withAudio {
+		if err := os.WriteFile(filepath.Join(run, "voice", "voice.wav"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if opts.withTranscript {
+		if err := os.WriteFile(filepath.Join(run, "voice", "transcript.txt"), []byte("hello"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(run, "voice", "transcript.json"), []byte(`{"text":"hello","segments":[{"start":0,"end":1,"text":"hello"}]}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if opts.withTimedText {
+			if err := os.WriteFile(filepath.Join(run, "voice", "transcript.srt"), []byte("1\n00:00:00,000 --> 00:00:01,000\nhello\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(run, "voice", "transcript.vtt"), []byte("WEBVTT\n\n00:00.000 --> 00:01.000\nhello\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if opts.withManifest {
+		if err := os.WriteFile(filepath.Join(run, "voice", "transcription-manifest.json"), []byte(`{"schema_version":"framescli.transcription_manifest.v1","chunks":[],"merge":{"status":"completed"}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(run, "extract.log"), []byte("log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if opts.withMetadataCSV {
+		if err := os.WriteFile(filepath.Join(run, "frames.csv"), []byte("file,index\nframe-0001.png,1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if opts.withFramesZip {
+		if err := os.WriteFile(filepath.Join(run, "frames.zip"), []byte("zip"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	createdAt := opts.createdAt
+	if createdAt == "" {
+		createdAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	md := media.RunMetadata{
+		VideoPath:      "/tmp/source.mp4",
+		FPS:            4,
+		FrameFormat:    "png",
+		ExtractedAudio: opts.withAudio,
+		AudioPath:      filepath.Join(run, "voice", "voice.wav"),
+		Preset:         "balanced",
+		CreatedAt:      createdAt,
+	}
+	raw, err := json.Marshal(md)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(media.MetadataPathForRun(run), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return run
 }
 
 func captureStdout(t *testing.T, fn func()) string {

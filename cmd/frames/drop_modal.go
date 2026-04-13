@@ -115,7 +115,7 @@ func (m *dropModalModel) adjustField(delta int) {
 			m.opts.FrameFormat = "png"
 		}
 	case 3:
-		presets := []string{"safe", "balanced", "fast"}
+		presets := []string{"laptop-safe", "balanced", "high-fidelity"}
 		m.opts.Preset = rotateChoice(presets, m.opts.Preset, delta)
 	case 4:
 		m.opts.NoSheet = !m.opts.NoSheet

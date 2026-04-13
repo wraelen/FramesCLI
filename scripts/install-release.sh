@@ -20,6 +20,7 @@ INSTALL_DEPS="false"
 INSTALL_WHISPER="false"
 RUN_SETUP="false"
 RUN_DOCTOR="true"
+CHECKSUM_FILE="checksums.txt"
 
 usage() {
   cat <<'EOF'
@@ -205,12 +206,17 @@ build_asset_name() {
 
 download_and_extract() {
   local asset_url="$1"
-  local os="$2"
-  local tmp_dir="$3"
+  local checksum_url="$2"
+  local asset_name="$3"
+  local os="$4"
+  local tmp_dir="$5"
   local archive_path="$tmp_dir/archive"
+  local checksum_path="$tmp_dir/${CHECKSUM_FILE}"
 
   need_cmd curl || fail "curl is required to download release artifacts"
   curl -fL "$asset_url" -o "$archive_path"
+  curl -fL "$checksum_url" -o "$checksum_path"
+  verify_download_checksum "$asset_name" "$archive_path" "$checksum_path"
 
   if [[ "$os" == "windows" ]]; then
     need_cmd unzip || fail "unzip is required to extract Windows archives"
@@ -218,6 +224,25 @@ download_and_extract() {
   else
     tar -xzf "$archive_path" -C "$tmp_dir"
   fi
+}
+
+verify_download_checksum() {
+  local asset_name="$1"
+  local archive_path="$2"
+  local checksum_path="$3"
+  local expected actual
+
+  expected="$(awk -v asset="$asset_name" '$2 == asset { print $1 }' "$checksum_path" | head -n1)"
+  [[ -n "$expected" ]] || fail "failed to find checksum for ${asset_name} in ${CHECKSUM_FILE}"
+
+  if need_cmd sha256sum; then
+    actual="$(sha256sum "$archive_path" | awk '{print $1}')"
+  elif need_cmd shasum; then
+    actual="$(shasum -a 256 "$archive_path" | awk '{print $1}')"
+  else
+    fail "sha256sum or shasum is required to verify release artifacts"
+  fi
+  [[ "$actual" == "$expected" ]] || fail "checksum mismatch for ${asset_name}"
 }
 
 can_sudo() {
@@ -374,6 +399,7 @@ ARCH_NAME="$(detect_arch)"
 TAG="$(resolve_version)"
 ASSET_NAME="$(build_asset_name "$TAG" "$OS_NAME" "$ARCH_NAME")"
 ASSET_URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET_NAME}"
+CHECKSUM_URL="https://github.com/${REPO}/releases/download/${TAG}/${CHECKSUM_FILE}"
 
 if [[ "$PRINT_URL" == "true" ]]; then
   printf '%s\n' "$ASSET_URL"
@@ -387,7 +413,7 @@ echo "Resolving release: ${TAG}"
 echo "Asset: ${ASSET_NAME}"
 echo "Install dir: ${INSTALL_DIR}"
 
-download_and_extract "$ASSET_URL" "$OS_NAME" "$TMP_DIR"
+download_and_extract "$ASSET_URL" "$CHECKSUM_URL" "$ASSET_NAME" "$OS_NAME" "$TMP_DIR"
 
 SOURCE_BIN="$(find "$TMP_DIR" -type f \( -name "${BIN_NAME}" -o -name "${BIN_NAME}.exe" \) | head -n1)"
 [[ -n "$SOURCE_BIN" ]] || fail "failed to find extracted ${BIN_NAME} binary in release archive"

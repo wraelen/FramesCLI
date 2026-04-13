@@ -4,6 +4,13 @@ Status date: 2026-03-07
 
 This is the single ongoing build checklist for planned work.
 
+Current note:
+
+- The original public-beta checklist below is complete.
+- Next-phase planning and parallel work prompts now live in:
+  - `docs/NEXT_PHASE_ROADMAP.md`
+  - `docs/AGENT_PARALLEL_WORK.md`
+
 ## High Priority
 
 - [x] Add queue-level summary output in TUI results (success/fail counts by job).
@@ -52,3 +59,4 @@ This is the single ongoing build checklist for planned work.
 - [x] Add copy-paste package-manager snippets for Whisper installation by platform.
 - [x] Add CI matrix smoke tests for macOS/Linux help/doctor/preview command ergonomics.
 - [x] Publish a short “agent recipes” page with end-to-end MCP workflows.
+- [x] Add packaged-release verification for checksums, archive contents, installer asset resolution, and current-platform runtime smoke.

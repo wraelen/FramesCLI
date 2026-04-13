@@ -174,6 +174,7 @@ func main() {
 	root.AddCommand(previewCommand())
 	root.AddCommand(openLastCommand())
 	root.AddCommand(copyLastCommand())
+	root.AddCommand(artifactsCommand())
 	root.AddCommand(mcpCommand())
 	root.AddCommand(importCommand())
 	root.AddCommand(sheetCommand())
@@ -210,12 +211,15 @@ type extractWorkflowOptions struct {
 	OutDir             string
 	Voice              bool
 	FrameFormat        string
+	FormatExplicit     bool
 	JPGQuality         int
 	NoSheet            bool
 	SheetCols          int
 	Verbose            bool
 	HWAccel            string
 	Preset             string
+	PresetExplicit     bool
+	FPSExplicit        bool
 	StartTime          string
 	EndTime            string
 	StartFrame         int
@@ -234,37 +238,79 @@ type extractWorkflowOptions struct {
 	TranscribeBackend  string
 	TranscribeBin      string
 	TranscribeLanguage string
+	ChunkDurationSec   int
+	ChunkExplicit      bool
 	TranscribeTimeout  int
+	AllowExpensive     bool
 	PostHook           string
 	PostHookTimeout    time.Duration
 }
 
 type extractWorkflowResult struct {
-	VideoInput      string            `json:"video_input"`
-	ResolvedVideo   string            `json:"resolved_video"`
-	SourceNote      string            `json:"source_note,omitempty"`
-	VideoInfo       media.VideoInfo   `json:"video_info"`
-	FPS             float64           `json:"fps"`
-	FrameFormat     string            `json:"frame_format"`
-	OutDir          string            `json:"out_dir"`
-	FrameCount      int               `json:"frame_count"`
-	HWAccel         string            `json:"hwaccel"`
-	Preset          string            `json:"preset"`
-	MetadataPath    string            `json:"metadata_path,omitempty"`
-	MetadataCSVPath string            `json:"metadata_csv_path,omitempty"`
-	FramesZipPath   string            `json:"frames_zip_path,omitempty"`
-	ContactSheet    string            `json:"contact_sheet,omitempty"`
-	TranscriptTxt   string            `json:"transcript_txt,omitempty"`
-	TranscriptJSON  string            `json:"transcript_json,omitempty"`
-	AudioPath       string            `json:"audio_path,omitempty"`
-	Warnings        []string          `json:"warnings,omitempty"`
-	ElapsedMs       int64             `json:"elapsed_ms"`
-	Artifacts       map[string]string `json:"artifacts,omitempty"`
+	VideoInput       string              `json:"video_input"`
+	ResolvedVideo    string              `json:"resolved_video"`
+	SourceNote       string              `json:"source_note,omitempty"`
+	VideoInfo        media.VideoInfo     `json:"video_info"`
+	FPS              float64             `json:"fps"`
+	FrameFormat      string              `json:"frame_format"`
+	OutDir           string              `json:"out_dir"`
+	FrameCount       int                 `json:"frame_count"`
+	HWAccel          string              `json:"hwaccel"`
+	Preset           string              `json:"preset"`
+	MediaPreset      string              `json:"media_preset,omitempty"`
+	ChunkDurationSec int                 `json:"chunk_duration_sec,omitempty"`
+	MetadataPath     string              `json:"metadata_path,omitempty"`
+	MetadataCSVPath  string              `json:"metadata_csv_path,omitempty"`
+	FramesZipPath    string              `json:"frames_zip_path,omitempty"`
+	ContactSheet     string              `json:"contact_sheet,omitempty"`
+	TranscriptTxt    string              `json:"transcript_txt,omitempty"`
+	TranscriptJSON   string              `json:"transcript_json,omitempty"`
+	AudioPath        string              `json:"audio_path,omitempty"`
+	Guardrails       []workloadGuardrail `json:"guardrails,omitempty"`
+	Warnings         []string            `json:"warnings,omitempty"`
+	ElapsedMs        int64               `json:"elapsed_ms"`
+	Artifacts        map[string]string   `json:"artifacts,omitempty"`
+}
+
+type workflowPresetDefinition struct {
+	Name             string
+	DefaultFPS       float64
+	DefaultFormat    string
+	MediaPreset      string
+	ChunkDurationSec int
+	Description      string
+	Legacy           bool
+}
+
+type resolvedWorkflowSettings struct {
+	Preset           string  `json:"preset"`
+	MediaPreset      string  `json:"media_preset"`
+	FPS              float64 `json:"fps"`
+	FrameFormat      string  `json:"frame_format"`
+	ChunkDurationSec int     `json:"chunk_duration_sec,omitempty"`
+}
+
+type workloadGuardrail struct {
+	ID        string `json:"id"`
+	Severity  string `json:"severity"`
+	Metric    string `json:"metric"`
+	Actual    string `json:"actual"`
+	Threshold string `json:"threshold"`
+	Message   string `json:"message"`
+}
+
+type workloadAssessment struct {
+	RequiresOverride bool                `json:"requires_override,omitempty"`
+	OverrideFlag     string              `json:"override_flag,omitempty"`
+	Guardrails       []workloadGuardrail `json:"guardrails,omitempty"`
 }
 
 type automationError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code      string `json:"code"`
+	Class     string `json:"class,omitempty"`
+	Message   string `json:"message"`
+	Recovery  string `json:"recovery,omitempty"`
+	Retryable bool   `json:"retryable,omitempty"`
 }
 
 type automationEnvelope struct {
@@ -279,11 +325,15 @@ type automationEnvelope struct {
 }
 
 type transcribeRunResult struct {
-	RunDir         string `json:"run_dir"`
-	AudioPath      string `json:"audio_path"`
-	TranscriptTxt  string `json:"transcript_txt,omitempty"`
-	TranscriptJSON string `json:"transcript_json,omitempty"`
-	AlreadyPresent bool   `json:"already_present,omitempty"`
+	RunDir          string `json:"run_dir"`
+	AudioPath       string `json:"audio_path"`
+	TranscriptTxt   string `json:"transcript_txt,omitempty"`
+	TranscriptJSON  string `json:"transcript_json,omitempty"`
+	ManifestPath    string `json:"manifest_path,omitempty"`
+	Chunked         bool   `json:"chunked,omitempty"`
+	TotalChunks     int    `json:"total_chunks,omitempty"`
+	CompletedChunks int    `json:"completed_chunks,omitempty"`
+	AlreadyPresent  bool   `json:"already_present,omitempty"`
 }
 
 type batchItemResult struct {
@@ -315,6 +365,126 @@ type telemetryEvent struct {
 
 const automationSchemaVersion = "framescli.v1"
 
+type errorDetails struct {
+	Class     string         `json:"class,omitempty"`
+	Message   string         `json:"message"`
+	Recovery  string         `json:"recovery,omitempty"`
+	Retryable bool           `json:"retryable,omitempty"`
+	Data      map[string]any `json:"data,omitempty"`
+}
+
+func classifyError(err error) errorDetails {
+	if err == nil {
+		return errorDetails{}
+	}
+
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	details := errorDetails{
+		Class:   "command_failed",
+		Message: msg,
+	}
+
+	switch {
+	case errors.Is(err, context.Canceled):
+		details.Class = "interrupted"
+		details.Recovery = "Re-run the command. Existing output remains on disk."
+		details.Retryable = true
+	case errors.Is(err, context.DeadlineExceeded):
+		details.Class = "interrupted"
+		details.Recovery = "Increase the timeout or re-run the command."
+		details.Retryable = true
+	case strings.Contains(lower, "timed out"):
+		details.Class = "interrupted"
+		details.Recovery = "Increase the timeout or re-run the command."
+		details.Retryable = true
+	case strings.Contains(lower, "cancelled"),
+		strings.Contains(lower, "canceled"),
+		strings.Contains(lower, "interrupted"):
+		details.Class = "interrupted"
+		details.Recovery = "Re-run the command. Existing output remains on disk."
+		details.Retryable = true
+	case strings.Contains(lower, "no space left on device"),
+		strings.Contains(lower, "insufficient disk space"),
+		strings.Contains(lower, "file too large"),
+		strings.Contains(lower, "file size limit exceeded"):
+		details.Class = "disk_space"
+		details.Recovery = "Free disk space, choose a different output path, or reduce output size before retrying."
+		details.Retryable = true
+	case strings.Contains(lower, "not found on path"),
+		strings.Contains(lower, "executable file not found"),
+		strings.Contains(lower, "install faster-whisper or whisper"),
+		strings.Contains(lower, "missing required tools"),
+		strings.Contains(lower, "folder picker unavailable"),
+		strings.Contains(lower, "no clipboard tool found"):
+		details.Class = "missing_dependency"
+		details.Recovery = "Install the missing dependency, confirm it is on PATH, then retry."
+		details.Retryable = true
+	case strings.Contains(lower, "unsupported"),
+		strings.Contains(lower, "ffprobe failed for"),
+		strings.Contains(lower, "video probe failed"),
+		strings.Contains(lower, "invalid video input"),
+		strings.Contains(lower, "video has no audio stream"),
+		strings.Contains(lower, "invalid or unsupported video stream"),
+		strings.Contains(lower, "no transcript json found"):
+		details.Class = "unsupported_media"
+		details.Recovery = "Use a supported, readable media file or output format, then retry."
+	case strings.Contains(lower, "path outside allowed roots"),
+		strings.Contains(lower, "only local filesystem paths are allowed"),
+		strings.Contains(lower, "must be local filesystem paths"),
+		strings.Contains(lower, "must be a local filesystem path"):
+		details.Class = "path_not_allowed"
+		details.Recovery = "Use a local path inside the configured allowed roots."
+	case strings.Contains(lower, "requires "),
+		strings.Contains(lower, "path is required"),
+		strings.Contains(lower, "video path is required"),
+		strings.Contains(lower, "audio path is required"),
+		strings.Contains(lower, "output directory is required"),
+		strings.Contains(lower, "invalid "),
+		strings.Contains(lower, "must be"),
+		strings.Contains(lower, "cannot be"),
+		strings.Contains(lower, "failed to resolve video input"),
+		strings.Contains(lower, "no video directories configured"):
+		details.Class = "invalid_input"
+		details.Recovery = "Fix the command input or configuration and retry."
+	case strings.Contains(lower, "not found"),
+		strings.Contains(lower, "no runs found"),
+		strings.Contains(lower, "no recent videos found"):
+		details.Class = "not_found"
+		details.Recovery = "Check the input path or run directory and retry."
+	}
+
+	details.Data = map[string]any{
+		"class":     details.Class,
+		"recovery":  details.Recovery,
+		"retryable": details.Retryable,
+	}
+	return details
+}
+
+func renderUserFacingError(err error) string {
+	if err == nil {
+		return ""
+	}
+	details := classifyError(err)
+	if strings.TrimSpace(details.Recovery) == "" {
+		return details.Message
+	}
+	return details.Message + "\nRecovery: " + details.Recovery
+}
+
+func buildMCPError(code int, err error) *mcpError {
+	if err == nil {
+		return nil
+	}
+	details := classifyError(err)
+	return &mcpError{
+		Code:    code,
+		Message: details.Message,
+		Data:    details.Data,
+	}
+}
+
 func buildAutomationEnvelope(command string, started time.Time, status string, data any, err error) automationEnvelope {
 	env := automationEnvelope{
 		SchemaVersion: automationSchemaVersion,
@@ -326,9 +496,13 @@ func buildAutomationEnvelope(command string, started time.Time, status string, d
 		Data:          data,
 	}
 	if err != nil {
+		details := classifyError(err)
 		env.Error = &automationError{
-			Code:    "command_failed",
-			Message: err.Error(),
+			Code:      "command_failed",
+			Class:     details.Class,
+			Message:   details.Message,
+			Recovery:  details.Recovery,
+			Retryable: details.Retryable,
 		}
 	}
 	return env
@@ -423,28 +597,44 @@ func runTranscribeRunResult(ctx context.Context, runDir string, opts media.Trans
 	voiceDir := filepath.Join(runDir, "voice")
 	transcriptJSON := filepath.Join(voiceDir, "transcript.json")
 	transcriptTxt := filepath.Join(voiceDir, "transcript.txt")
+	manifestPath := filepath.Join(voiceDir, "transcription-manifest.json")
 	result := transcribeRunResult{
 		RunDir:    runDir,
 		AudioPath: audioPath,
+	}
+	manifestComplete := false
+	if _, err := os.Stat(manifestPath); err == nil {
+		result.ManifestPath = manifestPath
+		manifestComplete, err = media.IsTranscriptionManifestComplete(manifestPath)
+		if err != nil {
+			return result, err
+		}
 	}
 	if _, err := os.Stat(transcriptJSON); err == nil {
 		result.TranscriptJSON = transcriptJSON
 		if _, txtErr := os.Stat(transcriptTxt); txtErr == nil {
 			result.TranscriptTxt = transcriptTxt
 		}
-		result.AlreadyPresent = true
-		return result, nil
+		if result.ManifestPath == "" || manifestComplete {
+			result.AlreadyPresent = true
+			return result, nil
+		}
 	}
 
 	opts.Context = ctx
 	opts.AudioPath = audioPath
 	opts.OutDir = voiceDir
-	txt, jsonPath, err := media.TranscribeAudioWithOptions(opts)
+	transcribeResult, err := media.TranscribeAudioWithDetails(opts)
 	if err != nil {
 		return result, err
 	}
-	result.TranscriptTxt = txt
-	result.TranscriptJSON = jsonPath
+	result.TranscriptTxt = transcribeResult.TranscriptTxt
+	result.TranscriptJSON = transcribeResult.TranscriptJSON
+	result.ManifestPath = transcribeResult.ManifestPath
+	result.Chunked = transcribeResult.Chunked
+	result.TotalChunks = transcribeResult.TotalChunks
+	result.CompletedChunks = transcribeResult.CompletedChunks
+	_ = refreshRunsIndexForRun(result.RunDir)
 	return result, nil
 }
 
@@ -478,18 +668,38 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 	if err != nil {
 		return result, fmt.Errorf("invalid video input %q: %w", videoPath, err)
 	}
-	if fps <= 0 {
-		fps = autoFPSForDuration(videoInfo.DurationSec)
+	resolved := resolveWorkflowSettings(videoInfo, fps, opts.FrameFormat, opts.Preset, opts.FPSExplicit, opts.FormatExplicit, opts.PresetExplicit, opts.Voice, opts.ChunkDurationSec, opts.ChunkExplicit)
+	transcriptPlan := buildTranscriptPlanWithSettings(videoInfo.DurationSec, opts.TranscribeBackend, opts.TranscribeModel, appCfg, doctorHasGPU())
+	previewMode := "frames"
+	if opts.Voice {
+		previewMode = "both"
 	}
-	result.FPS = fps
+	estimate := estimateOutputs(videoInfo, resolved.FPS, resolved.FrameFormat, previewMode, transcriptPlan, resolved.ChunkDurationSec)
+	result.FPS = resolved.FPS
 	result.VideoInfo = videoInfo
+	result.Preset = resolved.Preset
+	result.MediaPreset = resolved.MediaPreset
+	result.FrameFormat = resolved.FrameFormat
+	result.ChunkDurationSec = resolved.ChunkDurationSec
+	result.Guardrails = estimate.Guardrails.Guardrails
+	for _, guardrail := range estimate.Guardrails.Guardrails {
+		if guardrail.Severity == "warn" {
+			result.Warnings = append(result.Warnings, guardrail.Message)
+		}
+	}
+	if err := enforceGuardrails(estimate.Guardrails, opts.AllowExpensive); err != nil {
+		return result, err
+	}
 	if interactive {
 		fmt.Printf("  video: %s\n", videoPath)
 		fmt.Printf("  duration: %.2fs\n", videoInfo.DurationSec)
 		fmt.Printf("  resolution: %dx%d\n", videoInfo.Width, videoInfo.Height)
 		fmt.Printf("  source fps: %.2f\n", videoInfo.FrameRate)
-		fmt.Printf("  fps: %.2f, format: %s\n", fps, opts.FrameFormat)
-		fmt.Printf("  hwaccel: %s, preset: %s\n", opts.HWAccel, opts.Preset)
+		fmt.Printf("  fps: %.2f, format: %s\n", resolved.FPS, resolved.FrameFormat)
+		fmt.Printf("  hwaccel: %s, preset: %s (media=%s)\n", opts.HWAccel, resolved.Preset, resolved.MediaPreset)
+		if opts.Voice {
+			fmt.Printf("  transcript chunking: %ds\n", resolved.ChunkDurationSec)
+		}
 	}
 	if interactive && (strings.TrimSpace(opts.StartTime) != "" || strings.TrimSpace(opts.EndTime) != "") {
 		fmt.Printf("  time range: %s -> %s\n", valueOrDash(opts.StartTime), valueOrDash(opts.EndTime))
@@ -516,12 +726,12 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 	extractResult, err := media.ExtractMedia(media.ExtractMediaOptions{
 		Context:      ctx,
 		VideoPath:    videoPath,
-		FPS:          fps,
+		FPS:          resolved.FPS,
 		OutDir:       opts.OutDir,
-		FrameFormat:  opts.FrameFormat,
+		FrameFormat:  resolved.FrameFormat,
 		JPGQuality:   opts.JPGQuality,
 		HWAccel:      opts.HWAccel,
-		Preset:       opts.Preset,
+		Preset:       resolved.MediaPreset,
 		ExtractAudio: opts.Voice,
 		ProgressFn:   progressFn,
 		Verbose:      opts.Verbose,
@@ -618,44 +828,47 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		}
 		if interactive && opts.Verbose {
 			transcriptTxt, transcriptJSON, err = media.TranscribeAudioWithOptions(media.TranscribeOptions{
-				Context:    ctx,
-				AudioPath:  extractResult.AudioPath,
-				OutDir:     voiceDir,
-				Model:      opts.TranscribeModel,
-				Backend:    opts.TranscribeBackend,
-				Bin:        opts.TranscribeBin,
-				Language:   opts.TranscribeLanguage,
-				TimeoutSec: opts.TranscribeTimeout,
-				Verbose:    true,
+				Context:          ctx,
+				AudioPath:        extractResult.AudioPath,
+				OutDir:           voiceDir,
+				Model:            opts.TranscribeModel,
+				Backend:          opts.TranscribeBackend,
+				Bin:              opts.TranscribeBin,
+				Language:         opts.TranscribeLanguage,
+				ChunkDurationSec: resolved.ChunkDurationSec,
+				TimeoutSec:       opts.TranscribeTimeout,
+				Verbose:          true,
 			})
 		} else if interactive {
 			progressTracker.render("transcribing voice", 88)
 			err = runSpinner("  transcribe", func() error {
 				var spinnerErr error
 				transcriptTxt, transcriptJSON, spinnerErr = media.TranscribeAudioWithOptions(media.TranscribeOptions{
-					Context:    ctx,
-					AudioPath:  extractResult.AudioPath,
-					OutDir:     voiceDir,
-					Model:      opts.TranscribeModel,
-					Backend:    opts.TranscribeBackend,
-					Bin:        opts.TranscribeBin,
-					Language:   opts.TranscribeLanguage,
-					TimeoutSec: opts.TranscribeTimeout,
-					Verbose:    false,
+					Context:          ctx,
+					AudioPath:        extractResult.AudioPath,
+					OutDir:           voiceDir,
+					Model:            opts.TranscribeModel,
+					Backend:          opts.TranscribeBackend,
+					Bin:              opts.TranscribeBin,
+					Language:         opts.TranscribeLanguage,
+					ChunkDurationSec: resolved.ChunkDurationSec,
+					TimeoutSec:       opts.TranscribeTimeout,
+					Verbose:          false,
 				})
 				return spinnerErr
 			})
 		} else {
 			transcriptTxt, transcriptJSON, err = media.TranscribeAudioWithOptions(media.TranscribeOptions{
-				Context:    ctx,
-				AudioPath:  extractResult.AudioPath,
-				OutDir:     voiceDir,
-				Model:      opts.TranscribeModel,
-				Backend:    opts.TranscribeBackend,
-				Bin:        opts.TranscribeBin,
-				Language:   opts.TranscribeLanguage,
-				TimeoutSec: opts.TranscribeTimeout,
-				Verbose:    false,
+				Context:          ctx,
+				AudioPath:        extractResult.AudioPath,
+				OutDir:           voiceDir,
+				Model:            opts.TranscribeModel,
+				Backend:          opts.TranscribeBackend,
+				Bin:              opts.TranscribeBin,
+				Language:         opts.TranscribeLanguage,
+				ChunkDurationSec: resolved.ChunkDurationSec,
+				TimeoutSec:       opts.TranscribeTimeout,
+				Verbose:          false,
 			})
 		}
 		if err != nil {
@@ -702,10 +915,11 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		fmt.Println("Summary")
 		fmt.Println("-------")
 		fmt.Printf("Frames:        %d\n", frameCount)
-		fmt.Printf("FPS:           %.2f\n", fps)
+		fmt.Printf("FPS:           %.2f\n", resolved.FPS)
 		fmt.Printf("Format:        %s\n", extractResult.FrameFormat)
 		fmt.Printf("HWAccel:       %s\n", extractResult.UsedHWAccel)
-		fmt.Printf("Preset:        %s\n", opts.Preset)
+		fmt.Printf("Preset:        %s\n", resolved.Preset)
+		fmt.Printf("Media Preset:  %s\n", resolved.MediaPreset)
 		fmt.Printf("Output:        %s\n", extractResult.OutDir)
 	}
 	if extractResult.MetadataPath != "" {
@@ -734,6 +948,11 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 			fmt.Printf("TranscriptJSON:%s\n", transcriptJSON)
 		} else {
 			fmt.Printf("Transcript:    %s\n", "(disabled)")
+		}
+	}
+	for _, guardrail := range result.Guardrails {
+		if interactive {
+			fmt.Printf("Guardrail:     [%s] %s\n", guardrail.Severity, guardrail.Message)
 		}
 	}
 	for _, w := range extractResult.Warnings {
@@ -788,7 +1007,23 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 	if interactive {
 		fmt.Printf("Elapsed:       %s\n", time.Duration(result.ElapsedMs)*time.Millisecond)
 	}
+	if err := refreshRunsIndexForRun(result.OutDir); err != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("artifact index update failed: %v", err))
+	}
 	return result, nil
+}
+
+func refreshRunsIndexForRun(runDir string) error {
+	runDir = strings.TrimSpace(runDir)
+	if runDir == "" {
+		return nil
+	}
+	rootDir := filepath.Dir(runDir)
+	if rootDir == "" || rootDir == "." {
+		return nil
+	}
+	_, err := media.RefreshRunsIndex(rootDir)
+	return err
 }
 
 func withDiagnostics(stage string, inputPath string, outDir string, logPath string, runErr error) error {
@@ -1048,6 +1283,130 @@ func autoFPSForDuration(durationSec float64) float64 {
 	return fps
 }
 
+func workflowPresetDefinitions() []workflowPresetDefinition {
+	return []workflowPresetDefinition{
+		{
+			Name:             "laptop-safe",
+			DefaultFPS:       1,
+			DefaultFormat:    "jpg",
+			MediaPreset:      "safe",
+			ChunkDurationSec: 300,
+			Description:      "lowest-cost preset for long recordings and CPU-only machines",
+		},
+		{
+			Name:             "balanced",
+			DefaultFPS:       4,
+			DefaultFormat:    "png",
+			MediaPreset:      "balanced",
+			ChunkDurationSec: 600,
+			Description:      "default preset for general-purpose extraction and resumable transcripts",
+		},
+		{
+			Name:             "high-fidelity",
+			DefaultFPS:       8,
+			DefaultFormat:    "png",
+			MediaPreset:      "fast",
+			ChunkDurationSec: 900,
+			Description:      "denser sampling for short clips when disk and CPU budget are available",
+		},
+		{
+			Name:             "fast",
+			DefaultFPS:       4,
+			DefaultFormat:    "jpg",
+			MediaPreset:      "fast",
+			ChunkDurationSec: 0,
+			Description:      "legacy speed-first preset kept for backward compatibility",
+			Legacy:           true,
+		},
+	}
+}
+
+func canonicalWorkflowPreset(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "balanced":
+		return "balanced"
+	case "laptop-safe", "laptop_safe", "laptopsafe", "safe":
+		return "laptop-safe"
+	case "high-fidelity", "high_fidelity", "highfidelity":
+		return "high-fidelity"
+	case "fast":
+		return "fast"
+	default:
+		return "balanced"
+	}
+}
+
+func workflowPresetDefinitionFor(name string) workflowPresetDefinition {
+	canonical := canonicalWorkflowPreset(name)
+	for _, preset := range workflowPresetDefinitions() {
+		if preset.Name == canonical {
+			return preset
+		}
+	}
+	return workflowPresetDefinitionFor("balanced")
+}
+
+func userFacingPresetChoices() []string {
+	return []string{"laptop-safe", "balanced", "high-fidelity"}
+}
+
+func resolveWorkflowSettings(info media.VideoInfo, requestedFPS float64, requestedFormat string, requestedPreset string, fpsExplicit bool, formatExplicit bool, presetExplicit bool, voice bool, chunkDurationSec int, chunkExplicit bool) resolvedWorkflowSettings {
+	preset := workflowPresetDefinitionFor(requestedPreset)
+	defaultCfg := appconfig.Default()
+	fps := requestedFPS
+	implicitConfigFPS := !fpsExplicit && requestedFPS > 0 && math.Abs(requestedFPS-defaultCfg.DefaultFPS) < 0.0001
+	switch {
+	case fpsExplicit && fps <= 0:
+		fps = autoFPSForDuration(info.DurationSec)
+	case fpsExplicit:
+	case presetExplicit:
+		fps = preset.DefaultFPS
+	case implicitConfigFPS:
+		fps = preset.DefaultFPS
+	case fps <= 0:
+		fps = preset.DefaultFPS
+	}
+	format := strings.ToLower(strings.TrimSpace(requestedFormat))
+	if format == "jpeg" {
+		format = "jpg"
+	}
+	implicitConfigFormat := !formatExplicit && format != "" && format == defaultCfg.DefaultFormat
+	switch {
+	case formatExplicit && format != "":
+	case presetExplicit:
+		format = preset.DefaultFormat
+	case implicitConfigFormat:
+		format = preset.DefaultFormat
+	case format == "":
+		format = preset.DefaultFormat
+	}
+	resolvedChunkDuration := 0
+	if voice {
+		switch {
+		case chunkExplicit:
+			resolvedChunkDuration = chunkDurationSec
+		default:
+			resolvedChunkDuration = preset.ChunkDurationSec
+		}
+	}
+	return resolvedWorkflowSettings{
+		Preset:           preset.Name,
+		MediaPreset:      preset.MediaPreset,
+		FPS:              fps,
+		FrameFormat:      format,
+		ChunkDurationSec: resolvedChunkDuration,
+	}
+}
+
+func previewModeUsesTranscript(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "both", "audio":
+		return true
+	default:
+		return false
+	}
+}
+
 func extractCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "extract <videoPath|recent> [fps]",
@@ -1055,15 +1414,10 @@ func extractCommand() *cobra.Command {
 		Args:  cobra.RangeArgs(1, 2),
 		Run: func(cmd *cobra.Command, args []string) {
 			fpsSpec, _ := cmd.Flags().GetString("fps")
-			if !cmd.Flags().Changed("fps") {
-				if appCfg.DefaultFPS > 0 {
-					fpsSpec = fmt.Sprintf("%g", appCfg.DefaultFPS)
-				} else {
-					fpsSpec = "auto"
-				}
-			}
+			fpsExplicit := cmd.Flags().Changed("fps")
 			if len(args) >= 2 {
 				fpsSpec = args[1]
+				fpsExplicit = true
 			}
 			fps, err := parseExtractFPSSpec(fpsSpec)
 			if err != nil {
@@ -1085,6 +1439,7 @@ func extractCommand() *cobra.Command {
 			verbose, _ := cmd.Flags().GetBool("verbose")
 			hwaccel, _ := cmd.Flags().GetString("hwaccel")
 			preset, _ := cmd.Flags().GetString("preset")
+			chunkDuration, _ := cmd.Flags().GetInt("chunk-duration")
 			startTime, _ := cmd.Flags().GetString("from")
 			endTime, _ := cmd.Flags().GetString("to")
 			startFrame, _ := cmd.Flags().GetInt("frame-start")
@@ -1104,6 +1459,7 @@ func extractCommand() *cobra.Command {
 			transcribeBin, _ := cmd.Flags().GetString("transcribe-bin")
 			transcribeLanguage, _ := cmd.Flags().GetString("transcribe-language")
 			transcribeTimeout, _ := cmd.Flags().GetInt("transcribe-timeout")
+			allowExpensive, _ := cmd.Flags().GetBool("allow-expensive")
 			postHook, _ := cmd.Flags().GetString("post-hook")
 			postHookTimeout, _ := cmd.Flags().GetDuration("post-hook-timeout")
 			jsonOut, _ := cmd.Flags().GetBool("json")
@@ -1117,12 +1473,15 @@ func extractCommand() *cobra.Command {
 				OutDir:             outDir,
 				Voice:              voice,
 				FrameFormat:        frameFormat,
+				FormatExplicit:     cmd.Flags().Changed("format"),
 				JPGQuality:         jpgQuality,
 				NoSheet:            noSheet,
 				SheetCols:          sheetCols,
 				Verbose:            verbose,
 				HWAccel:            hwaccel,
 				Preset:             preset,
+				PresetExplicit:     cmd.Flags().Changed("preset"),
+				FPSExplicit:        fpsExplicit,
 				StartTime:          startTime,
 				EndTime:            endTime,
 				StartFrame:         startFrame,
@@ -1141,7 +1500,10 @@ func extractCommand() *cobra.Command {
 				TranscribeBackend:  transcribeBackend,
 				TranscribeBin:      transcribeBin,
 				TranscribeLanguage: transcribeLanguage,
+				ChunkDurationSec:   chunkDuration,
+				ChunkExplicit:      cmd.Flags().Changed("chunk-duration"),
 				TranscribeTimeout:  transcribeTimeout,
+				AllowExpensive:     allowExpensive,
 				PostHook:           postHook,
 				PostHookTimeout:    postHookTimeout,
 			}
@@ -1212,7 +1574,7 @@ func extractCommand() *cobra.Command {
 					markCommandInterrupted()
 					fmt.Fprintln(os.Stderr, "Cancelled.")
 				} else {
-					failf("%v\n", err)
+					failf("%s\n", renderUserFacingError(err))
 				}
 				return
 			}
@@ -1243,7 +1605,7 @@ func extractCommand() *cobra.Command {
 	cmd.Flags().Int("sheet-cols", 6, "Columns in generated contact sheet")
 	cmd.Flags().Bool("verbose", false, "Show raw ffmpeg/whisper logs")
 	cmd.Flags().String("hwaccel", appCfg.HWAccel, "Hardware acceleration mode: none|auto|cuda|vaapi|qsv")
-	cmd.Flags().String("preset", appCfg.PerformanceMode, "Performance mode: safe|balanced|fast")
+	cmd.Flags().String("preset", appCfg.PerformanceMode, "Workflow preset: laptop-safe|balanced|high-fidelity (legacy: safe|fast)")
 	cmd.Flags().String("from", "", "Start timestamp (e.g. 00:30 or seconds)")
 	cmd.Flags().String("to", "", "End timestamp (e.g. 01:45 or seconds)")
 	cmd.Flags().Int("frame-start", 0, "Source frame start index (inclusive)")
@@ -1262,7 +1624,9 @@ func extractCommand() *cobra.Command {
 	cmd.Flags().String("transcribe-backend", appCfg.TranscribeBackend, "Transcription backend: auto|whisper|faster-whisper")
 	cmd.Flags().String("transcribe-bin", "", "Override transcription CLI binary path/name for selected backend")
 	cmd.Flags().String("transcribe-language", appCfg.WhisperLanguage, "Transcription language override (blank=auto)")
+	cmd.Flags().Int("chunk-duration", 0, "Split voice transcription into N-second chunks (0 uses preset default)")
 	cmd.Flags().Int("transcribe-timeout", 0, "Skip transcription if it runs longer than N seconds (0 disables timeout)")
+	cmd.Flags().Bool("allow-expensive", false, "Allow workloads that exceed long-input guardrails")
 	cmd.Flags().String("post-hook", "", "Run command after successful extraction (overrides config post_extract_hook)")
 	cmd.Flags().Duration("post-hook-timeout", 0, "Post-hook timeout (e.g. 30s, 2m)")
 	cmd.Flags().Bool("json", false, "Output machine-readable JSON")
@@ -1276,13 +1640,7 @@ func extractBatchCommand() *cobra.Command {
 		Args:  cobra.MinimumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			fpsSpec, _ := cmd.Flags().GetString("fps")
-			if !cmd.Flags().Changed("fps") {
-				if appCfg.DefaultFPS > 0 {
-					fpsSpec = fmt.Sprintf("%g", appCfg.DefaultFPS)
-				} else {
-					fpsSpec = "auto"
-				}
-			}
+			fpsExplicit := cmd.Flags().Changed("fps")
 			fps, err := parseExtractFPSSpec(fpsSpec)
 			if err != nil {
 				failln("Invalid fps value. Use a positive number, 0, or auto.")
@@ -1299,6 +1657,7 @@ func extractBatchCommand() *cobra.Command {
 			verbose, _ := cmd.Flags().GetBool("verbose")
 			hwaccel, _ := cmd.Flags().GetString("hwaccel")
 			preset, _ := cmd.Flags().GetString("preset")
+			chunkDuration, _ := cmd.Flags().GetInt("chunk-duration")
 			startTime, _ := cmd.Flags().GetString("from")
 			endTime, _ := cmd.Flags().GetString("to")
 			startFrame, _ := cmd.Flags().GetInt("frame-start")
@@ -1317,6 +1676,7 @@ func extractBatchCommand() *cobra.Command {
 			transcribeBackend, _ := cmd.Flags().GetString("transcribe-backend")
 			transcribeBin, _ := cmd.Flags().GetString("transcribe-bin")
 			transcribeLanguage, _ := cmd.Flags().GetString("transcribe-language")
+			allowExpensive, _ := cmd.Flags().GetBool("allow-expensive")
 			postHook, _ := cmd.Flags().GetString("post-hook")
 			postHookTimeout, _ := cmd.Flags().GetDuration("post-hook-timeout")
 			jsonOut, _ := cmd.Flags().GetBool("json")
@@ -1352,12 +1712,15 @@ func extractBatchCommand() *cobra.Command {
 					OutDir:             outDir,
 					Voice:              voice,
 					FrameFormat:        frameFormat,
+					FormatExplicit:     cmd.Flags().Changed("format"),
 					JPGQuality:         jpgQuality,
 					NoSheet:            noSheet,
 					SheetCols:          sheetCols,
 					Verbose:            verbose,
 					HWAccel:            hwaccel,
 					Preset:             preset,
+					PresetExplicit:     cmd.Flags().Changed("preset"),
+					FPSExplicit:        fpsExplicit,
 					StartTime:          startTime,
 					EndTime:            endTime,
 					StartFrame:         startFrame,
@@ -1376,6 +1739,9 @@ func extractBatchCommand() *cobra.Command {
 					TranscribeBackend:  transcribeBackend,
 					TranscribeBin:      transcribeBin,
 					TranscribeLanguage: transcribeLanguage,
+					ChunkDurationSec:   chunkDuration,
+					ChunkExplicit:      cmd.Flags().Changed("chunk-duration"),
+					AllowExpensive:     allowExpensive,
 					PostHook:           postHook,
 					PostHookTimeout:    postHookTimeout,
 				}
@@ -1509,7 +1875,7 @@ func extractBatchCommand() *cobra.Command {
 	cmd.Flags().Int("sheet-cols", 6, "Columns in generated contact sheet")
 	cmd.Flags().Bool("verbose", false, "Show raw ffmpeg/whisper logs")
 	cmd.Flags().String("hwaccel", appCfg.HWAccel, "Hardware acceleration mode: none|auto|cuda|vaapi|qsv")
-	cmd.Flags().String("preset", appCfg.PerformanceMode, "Performance mode: safe|balanced|fast")
+	cmd.Flags().String("preset", appCfg.PerformanceMode, "Workflow preset: laptop-safe|balanced|high-fidelity (legacy: safe|fast)")
 	cmd.Flags().String("from", "", "Start timestamp (e.g. 00:30 or seconds)")
 	cmd.Flags().String("to", "", "End timestamp (e.g. 01:45 or seconds)")
 	cmd.Flags().Int("frame-start", 0, "Source frame start index (inclusive)")
@@ -1528,6 +1894,8 @@ func extractBatchCommand() *cobra.Command {
 	cmd.Flags().String("transcribe-backend", appCfg.TranscribeBackend, "Transcription backend: auto|whisper|faster-whisper")
 	cmd.Flags().String("transcribe-bin", "", "Override transcription CLI binary path/name for selected backend")
 	cmd.Flags().String("transcribe-language", appCfg.WhisperLanguage, "Transcription language override (blank=auto)")
+	cmd.Flags().Int("chunk-duration", 0, "Split voice transcription into N-second chunks (0 uses preset default)")
+	cmd.Flags().Bool("allow-expensive", false, "Allow workloads that exceed long-input guardrails")
 	cmd.Flags().String("post-hook", "", "Run command after each successful extraction (overrides config post_extract_hook)")
 	cmd.Flags().Duration("post-hook-timeout", 0, "Post-hook timeout per item (e.g. 30s, 2m)")
 	cmd.Flags().Bool("json", false, "Output machine-readable JSON")
@@ -1538,6 +1906,8 @@ func previewCommand() *cobra.Command {
 	var fpsSpec string
 	var format string
 	var mode string
+	var preset string
+	var chunkDuration int
 	cmd := &cobra.Command{
 		Use:   "preview <videoPath|recent>",
 		Short: "Dry-run preview of estimated outputs without running extraction",
@@ -1552,7 +1922,7 @@ func previewCommand() *cobra.Command {
 					markCommandFailure()
 					return
 				}
-				failf("failed to resolve video input: %v\n", err)
+				failf("%s\n", renderUserFacingError(fmt.Errorf("failed to resolve video input: %w", err)))
 				return
 			}
 			info, err := media.ProbeVideoInfo(videoPath)
@@ -1562,18 +1932,8 @@ func previewCommand() *cobra.Command {
 					markCommandFailure()
 					return
 				}
-				failf("video probe failed: %v\n", err)
+				failf("%s\n", renderUserFacingError(fmt.Errorf("invalid video input %q: %w", videoPath, err)))
 				return
-			}
-			if !cmd.Flags().Changed("fps") {
-				if appCfg.DefaultFPS > 0 {
-					fpsSpec = fmt.Sprintf("%g", appCfg.DefaultFPS)
-				} else {
-					fpsSpec = "auto"
-				}
-			}
-			if !cmd.Flags().Changed("format") && appCfg.DefaultFormat != "" {
-				format = appCfg.DefaultFormat
 			}
 			fps, err := parseExtractFPSSpec(fpsSpec)
 			if err != nil {
@@ -1583,24 +1943,25 @@ func previewCommand() *cobra.Command {
 					markCommandFailure()
 					return
 				}
-				failf("%v\n", err)
+				failf("%s\n", renderUserFacingError(err))
 				return
 			}
-			resolvedFPS := fps
-			if resolvedFPS <= 0 {
-				resolvedFPS = autoFPSForDuration(info.DurationSec)
-			}
-			estimate := estimateOutputs(info, resolvedFPS, format, mode)
+			resolved := resolveWorkflowSettings(info, fps, format, preset, cmd.Flags().Changed("fps"), cmd.Flags().Changed("format"), cmd.Flags().Changed("preset"), previewModeUsesTranscript(mode), chunkDuration, cmd.Flags().Changed("chunk-duration"))
+			transcriptPlan := buildTranscriptPlan(info.DurationSec, appCfg, doctorHasGPU())
+			estimate := estimateOutputs(info, resolved.FPS, resolved.FrameFormat, mode, transcriptPlan, resolved.ChunkDurationSec)
 			if jsonOut {
 				payload := map[string]any{
-					"input":       args[0],
-					"resolved":    videoPath,
-					"source_note": note,
-					"video_info":  info,
-					"target_fps":  resolvedFPS,
-					"format":      format,
-					"mode":        mode,
-					"estimate":    estimate,
+					"input":              args[0],
+					"resolved":           videoPath,
+					"source_note":        note,
+					"video_info":         info,
+					"target_fps":         resolved.FPS,
+					"format":             resolved.FrameFormat,
+					"mode":               mode,
+					"preset":             resolved.Preset,
+					"media_preset":       resolved.MediaPreset,
+					"chunk_duration_sec": resolved.ChunkDurationSec,
+					"estimate":           estimate,
 				}
 				emitAutomationJSON("preview", started, "success", payload, nil)
 				return
@@ -1615,34 +1976,115 @@ func previewCommand() *cobra.Command {
 			fmt.Printf("Resolution:  %dx%d\n", info.Width, info.Height)
 			fmt.Printf("Source FPS:  %.2f\n", info.FrameRate)
 			fmt.Printf("Mode:        %s\n", mode)
-			fmt.Printf("Target FPS:  %.2f\n", resolvedFPS)
-			fmt.Printf("Format:      %s\n", format)
+			fmt.Printf("Preset:      %s (media=%s)\n", resolved.Preset, resolved.MediaPreset)
+			fmt.Printf("Target FPS:  %.2f\n", resolved.FPS)
+			fmt.Printf("Format:      %s\n", resolved.FrameFormat)
+			if previewModeUsesTranscript(mode) {
+				fmt.Printf("Chunking:    %ds\n", resolved.ChunkDurationSec)
+			}
 			fmt.Printf("Frames est:  %d\n", estimate.FrameCount)
-			fmt.Printf("Disk est:    ~%.1f MB\n", estimate.EstimatedMB)
+			fmt.Printf("Disk est:    %s\n", estimate.DiskSummary)
 			fmt.Println("Artifacts:")
 			for _, a := range estimate.Artifacts {
 				fmt.Printf("- %s\n", a)
 			}
-			if estimate.Warning != "" {
-				fmt.Printf("Warning:     %s\n", estimate.Warning)
+			if len(estimate.DiskProfiles) > 0 {
+				fmt.Println("Common disk profiles:")
+				for _, profile := range estimate.DiskProfiles {
+					prefix := "-"
+					if profile.Selected {
+						prefix = "*"
+					}
+					fmt.Printf("%s %-12s %.2ffps %s %s (%d frames)\n", prefix, profile.Format, profile.FPS, profile.DiskSummary, profile.Label, profile.FrameCount)
+				}
+			}
+			if estimate.Transcript.Enabled {
+				fmt.Println("Transcript:")
+				fmt.Printf("- backend=%s model=%s hardware=%s\n", estimate.Transcript.Backend, estimate.Transcript.Model, estimate.Transcript.Hardware)
+				fmt.Printf("- class=%s\n", estimate.Transcript.RuntimeClass)
+				fmt.Printf("- hint=%s\n", estimate.Transcript.CostHint)
+				if estimate.Transcript.RuntimeSummary != "" {
+					fmt.Printf("- runtime=%s\n", estimate.Transcript.RuntimeSummary)
+				}
+			}
+			if estimate.MachineBenchmark != nil {
+				fmt.Println("Machine hint:")
+				fmt.Printf("- %s\n", estimate.MachineBenchmark.EstimatedSummary)
+				fmt.Printf("- %s\n", estimate.MachineBenchmark.Caveat)
+			}
+			if len(estimate.Warnings) > 0 {
+				fmt.Println("Warnings:")
+				for _, warning := range estimate.Warnings {
+					fmt.Printf("- %s\n", warning)
+				}
+			}
+			if len(estimate.Guardrails.Guardrails) > 0 {
+				fmt.Println("Guardrails:")
+				for _, guardrail := range estimate.Guardrails.Guardrails {
+					fmt.Printf("- [%s] %s (%s=%s, threshold %s)\n", guardrail.Severity, guardrail.Message, guardrail.Metric, guardrail.Actual, guardrail.Threshold)
+				}
 			}
 		},
 	}
 	cmd.Flags().StringVar(&fpsSpec, "fps", fmt.Sprintf("%g", appCfg.DefaultFPS), "Target extraction FPS for estimate, or 0/auto for automatic ~60-frame mode")
 	cmd.Flags().StringVar(&format, "format", appCfg.DefaultFormat, "Frame format estimate: png|jpg")
 	cmd.Flags().StringVar(&mode, "mode", "both", "Output mode estimate: frames|audio|both")
+	cmd.Flags().StringVar(&preset, "preset", appCfg.PerformanceMode, "Workflow preset: laptop-safe|balanced|high-fidelity (legacy: safe|fast)")
+	cmd.Flags().IntVar(&chunkDuration, "chunk-duration", 0, "Transcript chunk duration in seconds for estimate (0 uses preset default)")
 	cmd.Flags().Bool("json", false, "Output machine-readable JSON")
 	return cmd
 }
 
 type outputEstimate struct {
-	FrameCount  int      `json:"frame_count"`
-	EstimatedMB float64  `json:"estimated_mb"`
-	Artifacts   []string `json:"artifacts"`
-	Warning     string   `json:"warning,omitempty"`
+	FrameCount       int                   `json:"frame_count"`
+	EstimatedMB      float64               `json:"estimated_mb"`
+	EstimatedMBLow   float64               `json:"estimated_mb_low,omitempty"`
+	EstimatedMBHigh  float64               `json:"estimated_mb_high,omitempty"`
+	DiskSummary      string                `json:"disk_summary,omitempty"`
+	Artifacts        []string              `json:"artifacts"`
+	Warning          string                `json:"warning,omitempty"`
+	Warnings         []string              `json:"warnings,omitempty"`
+	DiskProfiles     []previewDiskProfile  `json:"disk_profiles,omitempty"`
+	Transcript       previewTranscriptPlan `json:"transcript"`
+	MachineBenchmark *previewBenchmarkHint `json:"machine_benchmark,omitempty"`
+	Guardrails       workloadAssessment    `json:"guardrails"`
 }
 
-func estimateOutputs(info media.VideoInfo, fps float64, format string, mode string) outputEstimate {
+type previewDiskProfile struct {
+	Label           string  `json:"label"`
+	Format          string  `json:"format"`
+	FPS             float64 `json:"fps"`
+	FrameCount      int     `json:"frame_count"`
+	EstimatedMB     float64 `json:"estimated_mb"`
+	EstimatedMBLow  float64 `json:"estimated_mb_low"`
+	EstimatedMBHigh float64 `json:"estimated_mb_high"`
+	DiskSummary     string  `json:"disk_summary"`
+	Selected        bool    `json:"selected,omitempty"`
+}
+
+type previewTranscriptPlan struct {
+	Enabled              bool     `json:"enabled"`
+	Backend              string   `json:"backend"`
+	Model                string   `json:"model"`
+	Hardware             string   `json:"hardware"`
+	RuntimeClass         string   `json:"runtime_class"`
+	CostHint             string   `json:"cost_hint"`
+	RuntimeSummary       string   `json:"runtime_summary,omitempty"`
+	EstimatedMinutesLow  float64  `json:"estimated_minutes_low,omitempty"`
+	EstimatedMinutesHigh float64  `json:"estimated_minutes_high,omitempty"`
+	Warnings             []string `json:"warnings,omitempty"`
+	ChunkDurationSec     int      `json:"chunk_duration_sec,omitempty"`
+}
+
+type previewBenchmarkHint struct {
+	HistoryPath        string  `json:"history_path"`
+	BestRealtimeFactor float64 `json:"best_realtime_factor"`
+	EstimatedMinutes   float64 `json:"estimated_minutes"`
+	EstimatedSummary   string  `json:"estimated_summary"`
+	Caveat             string  `json:"caveat"`
+}
+
+func estimateOutputs(info media.VideoInfo, fps float64, format string, mode string, transcript previewTranscriptPlan, chunkDurationSec int) outputEstimate {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" {
 		mode = "both"
@@ -1654,19 +2096,27 @@ func estimateOutputs(info media.VideoInfo, fps float64, format string, mode stri
 	if format == "" {
 		format = "png"
 	}
-	est := outputEstimate{}
+	est := outputEstimate{
+		Transcript: transcript,
+	}
+	if mode == "frames" {
+		est.Transcript.Enabled = false
+		est.Transcript.RuntimeSummary = ""
+		est.Transcript.Warnings = nil
+		est.Transcript.ChunkDurationSec = 0
+	}
 	switch mode {
 	case "audio":
 		est.Artifacts = []string{"voice/voice.wav (or selected audio format)", "voice/transcript.{txt,json,srt,vtt}"}
 		est.EstimatedMB = (info.DurationSec / 60.0) * 9.5
+		est.EstimatedMBLow = est.EstimatedMB * 0.7
+		est.EstimatedMBHigh = est.EstimatedMB * 1.35
+		est.DiskSummary = fmt.Sprintf("%s audio + transcript sidecars", formatMBRange(est.EstimatedMBLow, est.EstimatedMBHigh))
 	default:
 		frames := int(math.Ceil(info.DurationSec * fps))
-		perFrameKB := 180.0
-		if format == "jpg" || format == "jpeg" {
-			perFrameKB = 90.0
-		}
 		est.FrameCount = frames
-		est.EstimatedMB = (float64(frames) * perFrameKB) / 1024.0
+		est.EstimatedMB, est.EstimatedMBLow, est.EstimatedMBHigh = estimateFrameDiskMB(info, frames, format)
+		est.DiskSummary = fmt.Sprintf("%s for extracted frames + sheet", formatMBRange(est.EstimatedMBLow, est.EstimatedMBHigh))
 		est.Artifacts = []string{
 			"images/frame-XXXX." + format,
 			"images/sheets/contact-sheet.png",
@@ -1675,14 +2125,385 @@ func estimateOutputs(info media.VideoInfo, fps float64, format string, mode stri
 		if mode == "both" {
 			est.Artifacts = append(est.Artifacts, "voice/voice.wav", "voice/transcript.{txt,json,srt,vtt}")
 		}
-		if frames > 3000 || est.EstimatedMB > 800 {
-			est.Warning = "Large run estimate. Consider lower FPS or smaller time range."
-		}
+		est.DiskProfiles = buildDiskProfiles(info, fps, format)
+		est.MachineBenchmark = latestBenchmarkPreviewHint(info.DurationSec)
+	}
+
+	est.Transcript.ChunkDurationSec = chunkDurationSec
+	est.Guardrails = evaluateWorkloadGuardrails(info, mode, est, chunkDurationSec)
+	est.Warnings = buildPreviewWarnings(info, mode, fps, est)
+	if len(est.Warnings) > 0 {
+		est.Warning = est.Warnings[0]
 	}
 	return est
 }
 
-func runPreviewResult(input string, fps float64, format string, mode string) (map[string]any, error) {
+func estimateFrameDiskMB(info media.VideoInfo, frameCount int, format string) (float64, float64, float64) {
+	if frameCount <= 0 {
+		return 0, 0, 0
+	}
+	scale := float64(max(info.Width*info.Height, 640*360)) / float64(1920*1080)
+	typicalKB := 180.0 * scale
+	if format == "jpg" || format == "jpeg" {
+		typicalKB = 90.0 * scale
+	}
+	lowMB := (float64(frameCount) * typicalKB * 0.65) / 1024.0
+	highMB := (float64(frameCount) * typicalKB * 1.45) / 1024.0
+	approxMB := (lowMB + highMB) / 2.0
+	return approxMB, lowMB, highMB
+}
+
+func buildDiskProfiles(info media.VideoInfo, selectedFPS float64, selectedFormat string) []previewDiskProfile {
+	profiles := make([]previewDiskProfile, 0, 9)
+	added := map[string]struct{}{}
+	add := func(label string, fps float64, format string, selected bool) {
+		key := fmt.Sprintf("%.3f|%s", fps, format)
+		if _, ok := added[key]; ok {
+			return
+		}
+		added[key] = struct{}{}
+		frameCount := int(math.Ceil(info.DurationSec * fps))
+		approxMB, lowMB, highMB := estimateFrameDiskMB(info, frameCount, format)
+		profiles = append(profiles, previewDiskProfile{
+			Label:           label,
+			Format:          format,
+			FPS:             fps,
+			FrameCount:      frameCount,
+			EstimatedMB:     approxMB,
+			EstimatedMBLow:  lowMB,
+			EstimatedMBHigh: highMB,
+			DiskSummary:     formatMBRange(lowMB, highMB),
+			Selected:        selected,
+		})
+	}
+	add("selected", selectedFPS, selectedFormat, true)
+	for _, fps := range []float64{1, 2, 4, 12} {
+		for _, format := range []string{"jpg", "png"} {
+			label := fmt.Sprintf("%s @ %.0ffps", format, fps)
+			add(label, fps, format, fps == selectedFPS && format == selectedFormat)
+		}
+	}
+	sort.SliceStable(profiles, func(i, j int) bool {
+		if profiles[i].Selected != profiles[j].Selected {
+			return profiles[i].Selected
+		}
+		if profiles[i].FPS != profiles[j].FPS {
+			return profiles[i].FPS < profiles[j].FPS
+		}
+		return profiles[i].Format < profiles[j].Format
+	})
+	return profiles
+}
+
+func buildTranscriptPlan(durationSec float64, cfg appconfig.Config, gpuAvailable bool) previewTranscriptPlan {
+	return buildTranscriptPlanWithSettings(durationSec, cfg.TranscribeBackend, cfg.WhisperModel, cfg, gpuAvailable)
+}
+
+func buildTranscriptPlanWithSettings(durationSec float64, backendInput string, modelInput string, cfg appconfig.Config, gpuAvailable bool) previewTranscriptPlan {
+	model := strings.ToLower(strings.TrimSpace(modelInput))
+	if model == "" {
+		model = "base"
+	}
+	cfg.TranscribeBackend = backendInput
+	cfg.WhisperModel = model
+	backend := resolvePreviewTranscribeBackend(cfg)
+	hardware := "cpu"
+	if gpuAvailable {
+		hardware = "gpu-capable"
+	}
+	plan := previewTranscriptPlan{
+		Enabled:      true,
+		Backend:      backend,
+		Model:        model,
+		Hardware:     hardware,
+		RuntimeClass: "moderate",
+		CostHint:     "transcript runtime depends on backend, model, and local hardware",
+	}
+	if backend == "unavailable" {
+		plan.RuntimeClass = "unavailable"
+		plan.CostHint = "install whisper or faster-whisper before using transcript workflows"
+		plan.Warnings = append(plan.Warnings, "Transcript backend not detected; --voice runs will fail until whisper or faster-whisper is installed.")
+		return plan
+	}
+
+	lowFactor, highFactor := transcriptRealtimeRange(backend, model, gpuAvailable)
+	midFactor := (lowFactor + highFactor) / 2
+	switch {
+	case midFactor >= 6:
+		plan.RuntimeClass = "fast"
+	case midFactor >= 2:
+		plan.RuntimeClass = "moderate"
+	case midFactor >= 1:
+		plan.RuntimeClass = "near-realtime"
+	case midFactor >= 0.4:
+		plan.RuntimeClass = "slow"
+	default:
+		plan.RuntimeClass = "heavy"
+	}
+	switch {
+	case gpuAvailable && midFactor >= 3:
+		plan.CostHint = "GPU-backed transcription should stay well below video runtime in common cases"
+	case gpuAvailable:
+		plan.CostHint = "GPU helps, but larger Whisper models can still add noticeable runtime"
+	case midFactor >= 1:
+		plan.CostHint = "CPU-only transcription is plausible here, but expect runtime close to the clip length"
+	default:
+		plan.CostHint = "CPU-only transcription can dominate total runtime on longer recordings"
+	}
+	if durationSec > 0 {
+		plan.EstimatedMinutesLow = (durationSec / highFactor) / 60.0
+		plan.EstimatedMinutesHigh = (durationSec / lowFactor) / 60.0
+		plan.RuntimeSummary = fmt.Sprintf("%s of transcript time for this clip", formatMinuteRange(plan.EstimatedMinutesLow, plan.EstimatedMinutesHigh))
+	}
+	if !gpuAvailable && (model == "large" || model == "medium") {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s on CPU-only hardware is the slowest transcript path in common use.", model))
+	}
+	return plan
+}
+
+func resolvePreviewTranscribeBackend(cfg appconfig.Config) string {
+	backend := strings.ToLower(strings.TrimSpace(cfg.TranscribeBackend))
+	if backend == "" || backend == "auto" {
+		if _, err := exec.LookPath(strings.TrimSpace(cfg.FasterWhisperBin)); err == nil {
+			return "faster-whisper"
+		}
+		if _, err := exec.LookPath(strings.TrimSpace(cfg.WhisperBin)); err == nil {
+			return "whisper"
+		}
+		if _, err := exec.LookPath("faster-whisper"); err == nil {
+			return "faster-whisper"
+		}
+		if _, err := exec.LookPath("whisper"); err == nil {
+			return "whisper"
+		}
+		return "unavailable"
+	}
+	if backend == "faster_whisper" || backend == "fasterwhisper" {
+		backend = "faster-whisper"
+	}
+	return backend
+}
+
+func transcriptRealtimeRange(backend string, model string, gpuAvailable bool) (float64, float64) {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		model = "base"
+	}
+	if gpuAvailable {
+		switch backend {
+		case "faster-whisper":
+			switch model {
+			case "tiny", "turbo":
+				return 10, 18
+			case "base":
+				return 8, 14
+			case "small":
+				return 5, 9
+			case "medium":
+				return 3, 6
+			case "large":
+				return 1.5, 3
+			}
+		default:
+			switch model {
+			case "tiny", "turbo":
+				return 6, 10
+			case "base":
+				return 4, 8
+			case "small":
+				return 2.5, 5
+			case "medium":
+				return 1.5, 3
+			case "large":
+				return 0.8, 1.5
+			}
+		}
+	}
+	switch backend {
+	case "faster-whisper":
+		switch model {
+		case "tiny", "turbo":
+			return 2, 4
+		case "base":
+			return 1.5, 3
+		case "small":
+			return 0.8, 1.8
+		case "medium":
+			return 0.4, 1.0
+		case "large":
+			return 0.15, 0.4
+		}
+	default:
+		switch model {
+		case "tiny", "turbo":
+			return 1, 2
+		case "base":
+			return 0.7, 1.5
+		case "small":
+			return 0.35, 0.9
+		case "medium":
+			return 0.15, 0.45
+		case "large":
+			return 0.05, 0.18
+		}
+	}
+	return 0.5, 1.2
+}
+
+func buildPreviewWarnings(info media.VideoInfo, mode string, fps float64, est outputEstimate) []string {
+	warnings := make([]string, 0, 4)
+	switch {
+	case mode != "audio" && est.FrameCount >= 20000:
+		warnings = append(warnings, "Very large frame set; consider lower FPS or a narrower --from/--to window.")
+	case mode != "audio" && info.DurationSec >= 2*3600 && fps >= 4:
+		warnings = append(warnings, "Long-form recording at this sampling density can create a large extraction workload.")
+	}
+	if est.Transcript.Enabled {
+		warnings = append(warnings, est.Transcript.Warnings...)
+		if est.Transcript.Hardware == "cpu" && info.DurationSec >= 30*60 {
+			warnings = append(warnings, "CPU-only transcript path on a long recording may take substantially longer than the frame extraction.")
+		}
+	}
+	for _, guardrail := range est.Guardrails.Guardrails {
+		warnings = append(warnings, guardrail.Message)
+	}
+	if mode != "audio" && est.MachineBenchmark == nil && info.DurationSec >= 45*60 {
+		warnings = append(warnings, "No local benchmark history found; extraction timing is disk-size only until you run `framescli benchmark`.")
+	}
+	return uniqueStrings(warnings)
+}
+
+func evaluateWorkloadGuardrails(info media.VideoInfo, mode string, est outputEstimate, chunkDurationSec int) workloadAssessment {
+	report := workloadAssessment{
+		OverrideFlag: "--allow-expensive",
+	}
+	add := func(id string, blocking bool, metric string, actual string, threshold string, message string) {
+		severity := "warn"
+		if blocking {
+			severity = "block"
+			report.RequiresOverride = true
+		}
+		report.Guardrails = append(report.Guardrails, workloadGuardrail{
+			ID:        id,
+			Severity:  severity,
+			Metric:    metric,
+			Actual:    actual,
+			Threshold: threshold,
+			Message:   message,
+		})
+	}
+	if mode != "audio" {
+		switch {
+		case est.FrameCount >= 40000:
+			add("frame_count", true, "estimated_frame_count", fmt.Sprintf("%d", est.FrameCount), ">= 40000", "Estimated frame count exceeds 40000; narrow the time range, lower --fps, or rerun with --allow-expensive.")
+		case est.FrameCount >= 20000:
+			add("frame_count", false, "estimated_frame_count", fmt.Sprintf("%d", est.FrameCount), ">= 20000", "Estimated frame count exceeds 20000; expect a large extraction workload.")
+		}
+		switch {
+		case est.EstimatedMBHigh >= 4096:
+			add("disk_usage", true, "estimated_disk_mb_high", fmt.Sprintf("%.0f", est.EstimatedMBHigh), ">= 4096", "Estimated extracted frame footprint exceeds 4 GB; use a smaller window, JPG, or rerun with --allow-expensive.")
+		case est.EstimatedMBHigh >= 2048:
+			add("disk_usage", false, "estimated_disk_mb_high", fmt.Sprintf("%.0f", est.EstimatedMBHigh), ">= 2048", "Estimated extracted frame footprint exceeds 2 GB.")
+		}
+	}
+	switch {
+	case info.DurationSec >= 3*3600:
+		add("duration", true, "duration_minutes", fmt.Sprintf("%.1f", info.DurationSec/60.0), ">= 180", "Recording duration exceeds 3 hours; long-form runs at this size require --allow-expensive.")
+	case info.DurationSec >= 2*3600:
+		add("duration", false, "duration_minutes", fmt.Sprintf("%.1f", info.DurationSec/60.0), ">= 120", "Recording duration exceeds 2 hours; preview estimates should be reviewed before extraction.")
+	}
+	if est.Transcript.Enabled && est.Transcript.Hardware == "cpu" {
+		runtimeClass := strings.ToLower(strings.TrimSpace(est.Transcript.RuntimeClass))
+		if info.DurationSec >= 45*60 && (runtimeClass == "slow" || runtimeClass == "heavy") && chunkDurationSec <= 0 {
+			add("cpu_transcript", true, "transcript_runtime_class", est.Transcript.RuntimeClass, "slow/heavy on CPU without chunking", "CPU-only transcription is in a slow/heavy runtime class for a recording over 45 minutes; enable chunking or rerun with --allow-expensive.")
+		} else if info.DurationSec >= 30*60 && (runtimeClass == "slow" || runtimeClass == "heavy") {
+			if chunkDurationSec > 0 {
+				add("cpu_transcript", false, "transcript_chunk_duration_sec", fmt.Sprintf("%d", chunkDurationSec), "chunked", fmt.Sprintf("CPU-only transcription is chunked at %d-second intervals to keep long runs resumable.", chunkDurationSec))
+			} else {
+				add("cpu_transcript", false, "transcript_runtime_class", est.Transcript.RuntimeClass, "slow/heavy on CPU", "CPU-only transcription is expected to be expensive for this recording.")
+			}
+		}
+	}
+	return report
+}
+
+func enforceGuardrails(report workloadAssessment, allowExpensive bool) error {
+	if !report.RequiresOverride || allowExpensive {
+		return nil
+	}
+	blockers := make([]string, 0, len(report.Guardrails))
+	for _, guardrail := range report.Guardrails {
+		if guardrail.Severity == "block" {
+			blockers = append(blockers, guardrail.Message)
+		}
+	}
+	if len(blockers) == 0 {
+		blockers = append(blockers, "workload exceeded configured expensive-run thresholds")
+	}
+	return fmt.Errorf("expensive workload requires %s: %s", report.OverrideFlag, strings.Join(blockers, " "))
+}
+
+func latestBenchmarkPreviewHint(durationSec float64) *previewBenchmarkHint {
+	path := media.BenchmarkHistoryPath(appCfg.FramesRoot)
+	entries, err := media.ReadBenchmarkHistory(path, 1)
+	if err != nil || len(entries) == 0 {
+		return nil
+	}
+	best := bestSuccessfulSpeed(entries[0].Results)
+	if best <= 0 {
+		return nil
+	}
+	minutes := (durationSec / best) / 60.0
+	return &previewBenchmarkHint{
+		HistoryPath:        path,
+		BestRealtimeFactor: best,
+		EstimatedMinutes:   minutes,
+		EstimatedSummary:   fmt.Sprintf("recent benchmark suggests about %.1fx realtime, or ~%.1f minutes for this clip", best, minutes),
+		Caveat:             "derived from the most recent benchmark run; actual extraction varies by FPS, format, and storage speed",
+	}
+}
+
+func uniqueStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]struct{}{}
+	for _, item := range in {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func formatMBRange(low float64, high float64) string {
+	if low <= 0 && high <= 0 {
+		return "~0 MB"
+	}
+	if math.Abs(high-low) < 1 {
+		return fmt.Sprintf("~%.0f MB", (low+high)/2)
+	}
+	return fmt.Sprintf("~%.0f-%.0f MB", low, high)
+}
+
+func formatMinuteRange(low float64, high float64) string {
+	if low <= 0 && high <= 0 {
+		return "<1 minute"
+	}
+	if high < 1 {
+		return "<1 minute"
+	}
+	if math.Abs(high-low) < 0.5 {
+		return fmt.Sprintf("~%.1f minutes", (low+high)/2)
+	}
+	return fmt.Sprintf("~%.1f-%.1f minutes", low, high)
+}
+
+func runPreviewResult(input string, fps float64, format string, mode string, preset string, chunkDurationSec int, fpsExplicit bool, formatExplicit bool, presetExplicit bool, chunkExplicit bool) (map[string]any, error) {
 	videoPath, note, err := resolveVideoInput(input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve video input: %w", err)
@@ -1691,19 +2512,20 @@ func runPreviewResult(input string, fps float64, format string, mode string) (ma
 	if err != nil {
 		return nil, fmt.Errorf("video probe failed: %w", err)
 	}
-	if fps <= 0 {
-		fps = autoFPSForDuration(info.DurationSec)
-	}
-	estimate := estimateOutputs(info, fps, format, mode)
+	resolved := resolveWorkflowSettings(info, fps, format, preset, fpsExplicit, formatExplicit, presetExplicit, previewModeUsesTranscript(mode), chunkDurationSec, chunkExplicit)
+	estimate := estimateOutputs(info, resolved.FPS, resolved.FrameFormat, mode, buildTranscriptPlan(info.DurationSec, appCfg, doctorHasGPU()), resolved.ChunkDurationSec)
 	return map[string]any{
-		"input":       input,
-		"resolved":    videoPath,
-		"source_note": note,
-		"video_info":  info,
-		"target_fps":  fps,
-		"format":      format,
-		"mode":        mode,
-		"estimate":    estimate,
+		"input":              input,
+		"resolved":           videoPath,
+		"source_note":        note,
+		"video_info":         info,
+		"target_fps":         resolved.FPS,
+		"format":             resolved.FrameFormat,
+		"mode":               mode,
+		"preset":             resolved.Preset,
+		"media_preset":       resolved.MediaPreset,
+		"chunk_duration_sec": resolved.ChunkDurationSec,
+		"estimate":           estimate,
 	}, nil
 }
 
@@ -1750,7 +2572,7 @@ func openLastCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&rootDir, "root", "", "Runs root directory (default: config frames root)")
-	cmd.Flags().StringVar(&artifact, "artifact", "run", "Artifact: run|transcript|sheet|log|metadata|audio")
+	cmd.Flags().StringVar(&artifact, "artifact", "run", "Artifact: run|transcript|transcript-json|transcript-srt|transcript-vtt|sheet|log|metadata|frames|manifest|metadata-csv|frames-zip|audio")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output machine-readable JSON without opening")
 	return cmd
 }
@@ -1781,112 +2603,287 @@ func copyLastCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&rootDir, "root", "", "Runs root directory (default: config frames root)")
-	cmd.Flags().StringVar(&artifact, "artifact", "run", "Artifact: run|transcript|sheet|log|metadata|audio")
+	cmd.Flags().StringVar(&artifact, "artifact", "run", "Artifact: run|transcript|transcript-json|transcript-srt|transcript-vtt|sheet|log|metadata|frames|manifest|metadata-csv|frames-zip|audio")
+	return cmd
+}
+
+func artifactsCommand() *cobra.Command {
+	var rootDir string
+	var recent int
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "artifacts [run|latest]",
+		Short: "List recent runs or show indexed artifacts for a run",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			started := time.Now()
+			if strings.TrimSpace(rootDir) == "" {
+				rootDir = appCfg.FramesRoot
+			}
+			if strings.TrimSpace(rootDir) == "" {
+				rootDir = media.DefaultFramesRoot
+			}
+
+			if recent > 0 {
+				runs, err := media.RecentRuns(rootDir, recent)
+				if err != nil {
+					if jsonOut {
+						emitAutomationJSON("artifacts", started, "error", map[string]any{"root": rootDir, "recent": recent}, err)
+						markCommandFailure()
+						return
+					}
+					failf("%s\n", renderUserFacingError(err))
+					return
+				}
+				payload := map[string]any{
+					"root":      rootDir,
+					"index":     media.IndexFilePath(rootDir),
+					"recent":    recent,
+					"run_count": len(runs),
+					"runs":      runs,
+				}
+				if jsonOut {
+					emitAutomationJSON("artifacts", started, "success", payload, nil)
+					return
+				}
+				printRecentArtifacts(rootDir, runs)
+				return
+			}
+
+			selector := "latest"
+			if len(args) == 1 {
+				selector = args[0]
+			}
+			run, err := media.SelectRun(rootDir, selector)
+			if err != nil {
+				if jsonOut {
+					emitAutomationJSON("artifacts", started, "error", map[string]any{"root": rootDir, "run": selector}, err)
+					markCommandFailure()
+					return
+				}
+				failf("%s\n", renderUserFacingError(err))
+				return
+			}
+			payload := map[string]any{
+				"root":  rootDir,
+				"index": media.IndexFilePath(rootDir),
+				"run":   run,
+			}
+			if jsonOut {
+				emitAutomationJSON("artifacts", started, "success", payload, nil)
+				return
+			}
+			printRunArtifacts(run, media.IndexFilePath(rootDir))
+		},
+	}
+	cmd.Flags().StringVar(&rootDir, "root", "", "Runs root directory (default: config frames root)")
+	cmd.Flags().IntVar(&recent, "recent", 0, "List the N most recent indexed runs instead of showing one run")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output machine-readable JSON")
 	return cmd
 }
 
 func findLastRunArtifact(rootDir string, artifact string) (string, string, error) {
-	items, err := scanRunDirs(rootDir)
+	run, err := media.SelectRun(rootDir, "latest")
 	if err != nil {
 		return "", "", err
 	}
-	if len(items) == 0 {
-		return "", "", fmt.Errorf("no runs found in %s", rootDir)
+	target, err := artifactPathForRun(run, artifact)
+	if err != nil {
+		return "", run.Path, err
 	}
-	sort.Slice(items, func(i, j int) bool { return items[i].mod.After(items[j].mod) })
-	runPath := items[0].path
+	return target, run.Path, nil
+}
+
+func artifactPathForRun(run media.IndexedRun, artifact string) (string, error) {
 	kind := strings.ToLower(strings.TrimSpace(artifact))
 	if kind == "" {
 		kind = "run"
 	}
 	switch kind {
 	case "run":
-		return runPath, runPath, nil
+		return run.Path, nil
 	case "transcript":
-		p := filepath.Join(runPath, "voice", "transcript.txt")
-		if _, err := os.Stat(p); err != nil {
-			return "", runPath, fmt.Errorf("transcript not found for last run: %s", runPath)
+		if run.Artifacts.TranscriptTxt == "" {
+			return "", fmt.Errorf("transcript not found for run: %s", run.Path)
 		}
-		return p, runPath, nil
+		return run.Artifacts.TranscriptTxt, nil
+	case "transcript-json", "transcript_json":
+		if run.Artifacts.TranscriptJSON == "" {
+			return "", fmt.Errorf("transcript json not found for run: %s", run.Path)
+		}
+		return run.Artifacts.TranscriptJSON, nil
+	case "transcript-srt", "transcript_srt":
+		if run.Artifacts.TranscriptSRT == "" {
+			return "", fmt.Errorf("transcript srt not found for run: %s", run.Path)
+		}
+		return run.Artifacts.TranscriptSRT, nil
+	case "transcript-vtt", "transcript_vtt":
+		if run.Artifacts.TranscriptVTT == "" {
+			return "", fmt.Errorf("transcript vtt not found for run: %s", run.Path)
+		}
+		return run.Artifacts.TranscriptVTT, nil
 	case "sheet":
-		p := filepath.Join(runPath, "images", "sheets", "contact-sheet.png")
-		if _, err := os.Stat(p); err != nil {
-			return "", runPath, fmt.Errorf("contact sheet not found for last run: %s", runPath)
+		if run.Artifacts.ContactSheet == "" {
+			return "", fmt.Errorf("contact sheet not found for run: %s", run.Path)
 		}
-		return p, runPath, nil
+		return run.Artifacts.ContactSheet, nil
 	case "log":
-		p := filepath.Join(runPath, "extract.log")
-		if _, err := os.Stat(p); err != nil {
-			return "", runPath, fmt.Errorf("log not found for last run: %s", runPath)
+		if run.Artifacts.Log == "" {
+			return "", fmt.Errorf("log not found for run: %s", run.Path)
 		}
-		return p, runPath, nil
+		return run.Artifacts.Log, nil
 	case "metadata":
-		p := media.MetadataPathForRun(runPath)
-		if _, err := os.Stat(p); err != nil {
-			return "", runPath, fmt.Errorf("metadata not found for last run: %s", runPath)
+		if run.Artifacts.Metadata == "" {
+			return "", fmt.Errorf("metadata not found for run: %s", run.Path)
 		}
-		return p, runPath, nil
+		return run.Artifacts.Metadata, nil
+	case "frames":
+		if run.Artifacts.Frames == "" {
+			return "", fmt.Errorf("frames manifest not found for run: %s", run.Path)
+		}
+		return run.Artifacts.Frames, nil
+	case "manifest", "transcription-manifest", "transcription_manifest":
+		if run.Artifacts.TranscriptionManifest == "" {
+			return "", fmt.Errorf("transcription manifest not found for run: %s", run.Path)
+		}
+		return run.Artifacts.TranscriptionManifest, nil
+	case "metadata-csv", "metadata_csv":
+		if run.Artifacts.MetadataCSV == "" {
+			return "", fmt.Errorf("metadata csv not found for run: %s", run.Path)
+		}
+		return run.Artifacts.MetadataCSV, nil
+	case "frames-zip", "frames_zip":
+		if run.Artifacts.FramesZip == "" {
+			return "", fmt.Errorf("frames zip not found for run: %s", run.Path)
+		}
+		return run.Artifacts.FramesZip, nil
 	case "audio":
-		candidates, _ := filepath.Glob(filepath.Join(runPath, "voice", "voice.*"))
-		if len(candidates) == 0 {
-			return "", runPath, fmt.Errorf("audio not found for last run: %s", runPath)
+		if run.Artifacts.Audio == "" {
+			return "", fmt.Errorf("audio not found for run: %s", run.Path)
 		}
-		return candidates[0], runPath, nil
+		return run.Artifacts.Audio, nil
 	default:
-		return "", "", fmt.Errorf("unsupported artifact %q (use run|transcript|sheet|log|metadata|audio)", artifact)
+		return "", fmt.Errorf("unsupported artifact %q (use run|transcript|transcript-json|transcript-srt|transcript-vtt|sheet|log|metadata|frames|manifest|metadata-csv|frames-zip|audio)", artifact)
 	}
 }
 
 func latestRunArtifacts(rootDir string) (map[string]string, error) {
-	_, runPath, err := findLastRunArtifact(rootDir, "run")
+	run, err := media.SelectRun(rootDir, "latest")
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]string{"run": runPath}
-	if p, _, err := findLastRunArtifact(rootDir, "transcript"); err == nil {
-		out["transcript"] = p
-	}
-	if p, _, err := findLastRunArtifact(rootDir, "sheet"); err == nil {
-		out["sheet"] = p
-	}
-	if p, _, err := findLastRunArtifact(rootDir, "log"); err == nil {
-		out["log"] = p
-	}
-	if p, _, err := findLastRunArtifact(rootDir, "metadata"); err == nil {
-		out["metadata"] = p
-	}
-	if p, _, err := findLastRunArtifact(rootDir, "audio"); err == nil {
-		out["audio"] = p
-	}
-	return out, nil
+	return runArtifactsPayload(run), nil
 }
 
-type runDirItem struct {
-	path string
-	mod  time.Time
+func runArtifactsPayload(run media.IndexedRun) map[string]string {
+	out := map[string]string{
+		"run":      run.Path,
+		"metadata": run.Artifacts.Metadata,
+	}
+	if run.Artifacts.Frames != "" {
+		out["frames"] = run.Artifacts.Frames
+	}
+	if run.Artifacts.ContactSheet != "" {
+		out["sheet"] = run.Artifacts.ContactSheet
+	}
+	if run.Artifacts.Audio != "" {
+		out["audio"] = run.Artifacts.Audio
+	}
+	if run.Artifacts.TranscriptTxt != "" {
+		out["transcript"] = run.Artifacts.TranscriptTxt
+	}
+	if run.Artifacts.TranscriptJSON != "" {
+		out["transcript_json"] = run.Artifacts.TranscriptJSON
+	}
+	if run.Artifacts.TranscriptSRT != "" {
+		out["transcript_srt"] = run.Artifacts.TranscriptSRT
+	}
+	if run.Artifacts.TranscriptVTT != "" {
+		out["transcript_vtt"] = run.Artifacts.TranscriptVTT
+	}
+	if run.Artifacts.TranscriptionManifest != "" {
+		out["manifest"] = run.Artifacts.TranscriptionManifest
+	}
+	if run.Artifacts.Log != "" {
+		out["log"] = run.Artifacts.Log
+	}
+	if run.Artifacts.MetadataCSV != "" {
+		out["metadata_csv"] = run.Artifacts.MetadataCSV
+	}
+	if run.Artifacts.FramesZip != "" {
+		out["frames_zip"] = run.Artifacts.FramesZip
+	}
+	return out
 }
 
-func scanRunDirs(rootDir string) ([]runDirItem, error) {
-	entries, err := os.ReadDir(rootDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []runDirItem{}, nil
-		}
-		return nil, err
+func printRecentArtifacts(rootDir string, runs []media.IndexedRun) {
+	fmt.Println("Recent Runs")
+	fmt.Println("-----------")
+	fmt.Printf("Root: %s\n", rootDir)
+	fmt.Printf("Index: %s\n", media.IndexFilePath(rootDir))
+	if len(runs) == 0 {
+		fmt.Println("Runs: 0")
+		return
 	}
-	out := make([]runDirItem, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() {
+	for _, run := range runs {
+		created := valueOrDash(run.CreatedAt)
+		source := valueOrDash(run.SourceVideoPath)
+		fmt.Printf("\n- %s [%s]\n", run.Name, run.Status)
+		fmt.Printf("  created: %s\n", created)
+		fmt.Printf("  source:  %s\n", source)
+		fmt.Printf("  run:     %s\n", run.Path)
+		if run.Artifacts.TranscriptTxt != "" {
+			fmt.Printf("  text:    %s\n", run.Artifacts.TranscriptTxt)
+		}
+		if run.Artifacts.ContactSheet != "" {
+			fmt.Printf("  sheet:   %s\n", run.Artifacts.ContactSheet)
+		}
+	}
+}
+
+func printRunArtifacts(run media.IndexedRun, indexPath string) {
+	fmt.Println("Run Artifacts")
+	fmt.Println("-------------")
+	fmt.Printf("Run:      %s\n", run.Name)
+	fmt.Printf("Status:   %s\n", run.Status)
+	fmt.Printf("Index:    %s\n", indexPath)
+	fmt.Printf("Dir:      %s\n", run.Path)
+	fmt.Printf("Created:  %s\n", valueOrDash(run.CreatedAt))
+	fmt.Printf("Updated:  %s\n", valueOrDash(run.UpdatedAt))
+	fmt.Printf("Source:   %s\n", valueOrDash(run.SourceVideoPath))
+	fmt.Printf("FPS:      %.2f\n", run.FPS)
+	fmt.Printf("Format:   %s\n", valueOrDash(run.Format))
+	fmt.Printf("Preset:   %s\n", valueOrDash(run.Preset))
+	if run.DurationSec > 0 {
+		fmt.Printf("Duration: %.2fs\n", run.DurationSec)
+	}
+	if len(run.Warnings) > 0 {
+		fmt.Printf("Warnings: %s\n", strings.Join(run.Warnings, ", "))
+	}
+	fmt.Println("Artifacts:")
+	for _, line := range []struct {
+		label string
+		path  string
+	}{
+		{"run", run.Path},
+		{"metadata", run.Artifacts.Metadata},
+		{"frames", run.Artifacts.Frames},
+		{"contact_sheet", run.Artifacts.ContactSheet},
+		{"audio", run.Artifacts.Audio},
+		{"transcript_txt", run.Artifacts.TranscriptTxt},
+		{"transcript_json", run.Artifacts.TranscriptJSON},
+		{"transcript_srt", run.Artifacts.TranscriptSRT},
+		{"transcript_vtt", run.Artifacts.TranscriptVTT},
+		{"transcription_manifest", run.Artifacts.TranscriptionManifest},
+		{"log", run.Artifacts.Log},
+		{"metadata_csv", run.Artifacts.MetadataCSV},
+		{"frames_zip", run.Artifacts.FramesZip},
+	} {
+		if strings.TrimSpace(line.path) == "" {
 			continue
 		}
-		p := filepath.Join(rootDir, e.Name())
-		info, statErr := os.Stat(p)
-		if statErr != nil {
-			continue
-		}
-		out = append(out, runDirItem{path: p, mod: info.ModTime()})
+		fmt.Printf("- %s: %s\n", line.label, line.path)
 	}
-	return out, nil
 }
 
 func openPathCLI(target string) error {
@@ -1974,8 +2971,9 @@ type mcpResponse struct {
 }
 
 type mcpError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int            `json:"code"`
+	Message string         `json:"message"`
+	Data    map[string]any `json:"data,omitempty"`
 }
 
 const (
@@ -2000,6 +2998,7 @@ type mcpServerState struct {
 	out        io.Writer
 	timeout    time.Duration
 	maxTimeout time.Duration
+	heartbeat  time.Duration
 }
 
 func (s *mcpServerState) writeNotification(method string, params any) error {
@@ -2024,10 +3023,14 @@ func (s *mcpServerState) startHeartbeat(ctx context.Context, toolName string) fu
 	default:
 		return func() {}
 	}
+	interval := s.heartbeat
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
 	started := time.Now()
 	done := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -2134,6 +3137,7 @@ func newMCPServerState(out io.Writer) *mcpServerState {
 		out:        out,
 		timeout:    defaultMCPToolTimeout,
 		maxTimeout: maxMCPToolTimeout,
+		heartbeat:  10 * time.Second,
 	}
 }
 
@@ -2199,8 +3203,12 @@ func (s *mcpServerState) toolTimeout(overrideMS int) time.Duration {
 }
 
 func runMCPServer(in io.Reader, out io.Writer) error {
-	br := bufio.NewReader(in)
 	state := newMCPServerState(out)
+	return runMCPServerWithState(in, state)
+}
+
+func runMCPServerWithState(in io.Reader, state *mcpServerState) error {
+	br := bufio.NewReader(in)
 	for {
 		req, err := readMCPMessage(br)
 		if err != nil {
@@ -2221,7 +3229,7 @@ func runMCPServer(in io.Reader, out io.Writer) error {
 			}
 			var params mcpToolCallParams
 			if err := json.Unmarshal(req.Params, &params); err != nil {
-				if writeErr := state.write(&mcpResponse{JSONRPC: "2.0", ID: req.ID, Error: &mcpError{Code: -32602, Message: "invalid params"}}); writeErr != nil {
+				if writeErr := state.write(&mcpResponse{JSONRPC: "2.0", ID: req.ID, Error: buildMCPError(-32602, errors.New("invalid params"))}); writeErr != nil {
 					return writeErr
 				}
 				continue
@@ -2235,19 +3243,18 @@ func runMCPServer(in io.Reader, out io.Writer) error {
 				defer stopHeartbeat()
 				result, err := callMCPTool(ctx, p.Name, p.Arguments)
 				if err != nil {
-					msg := err.Error()
 					code := -32000
 					if errors.Is(ctx.Err(), context.Canceled) {
 						code = -32800
-						msg = "tool call cancelled"
+						err = errors.New("tool call cancelled")
 					} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 						code = -32001
-						msg = "tool call timed out"
+						err = errors.New("tool call timed out")
 					}
 					_ = state.write(&mcpResponse{
 						JSONRPC: "2.0",
 						ID:      reqID,
-						Error:   &mcpError{Code: code, Message: msg},
+						Error:   buildMCPError(code, err),
 					})
 					return
 				}
@@ -2277,7 +3284,7 @@ func runMCPServer(in io.Reader, out io.Writer) error {
 
 func handleMCPRequest(req mcpRequest) *mcpResponse {
 	makeErr := func(code int, msg string) *mcpResponse {
-		return &mcpResponse{JSONRPC: "2.0", ID: req.ID, Error: &mcpError{Code: code, Message: msg}}
+		return &mcpResponse{JSONRPC: "2.0", ID: req.ID, Error: buildMCPError(code, errors.New(msg))}
 	}
 	if req.Method == "notifications/initialized" || len(req.ID) == 0 {
 		return nil
@@ -2311,10 +3318,12 @@ func handleMCPRequest(req mcpRequest) *mcpResponse {
 				"inputSchema": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"input":  map[string]any{"type": "string"},
-						"fps":    map[string]any{"type": "number"},
-						"format": map[string]any{"type": "string"},
-						"mode":   map[string]any{"type": "string"},
+						"input":          map[string]any{"type": "string"},
+						"fps":            map[string]any{"type": "number"},
+						"format":         map[string]any{"type": "string"},
+						"mode":           map[string]any{"type": "string"},
+						"preset":         map[string]any{"type": "string"},
+						"chunk_duration": map[string]any{"type": "integer"},
 					},
 				},
 			},
@@ -2331,6 +3340,8 @@ func handleMCPRequest(req mcpRequest) *mcpResponse {
 						"out":                 map[string]any{"type": "string"},
 						"hwaccel":             map[string]any{"type": "string"},
 						"preset":              map[string]any{"type": "string"},
+						"chunk_duration":      map[string]any{"type": "integer"},
+						"allow_expensive":     map[string]any{"type": "boolean"},
 						"from":                map[string]any{"type": "string"},
 						"to":                  map[string]any{"type": "string"},
 						"frame_start":         map[string]any{"type": "integer"},
@@ -2353,6 +3364,9 @@ func handleMCPRequest(req mcpRequest) *mcpResponse {
 						"fps":                 map[string]any{"type": "number"},
 						"voice":               map[string]any{"type": "boolean"},
 						"format":              map[string]any{"type": "string"},
+						"preset":              map[string]any{"type": "string"},
+						"chunk_duration":      map[string]any{"type": "integer"},
+						"allow_expensive":     map[string]any{"type": "boolean"},
 						"transcribe_backend":  map[string]any{"type": "string"},
 						"transcribe_bin":      map[string]any{"type": "string"},
 						"transcribe_language": map[string]any{"type": "string"},
@@ -2381,12 +3395,25 @@ func handleMCPRequest(req mcpRequest) *mcpResponse {
 				},
 			},
 			{
+				"name":        "get_run_artifacts",
+				"description": "Return indexed artifacts for the latest, a specific run, or a recent run list",
+				"inputSchema": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"root":   map[string]any{"type": "string"},
+						"run":    map[string]any{"type": "string"},
+						"recent": map[string]any{"type": "integer"},
+					},
+				},
+			},
+			{
 				"name":        "transcribe_run",
 				"description": "Resume transcription for an existing run directory",
 				"inputSchema": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"run_dir": map[string]any{"type": "string"},
+						"run_dir":        map[string]any{"type": "string"},
+						"chunk_duration": map[string]any{"type": "integer"},
 					},
 				},
 			},
@@ -2425,10 +3452,12 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		return buildAutomationEnvelope("doctor", started, "success", collectDoctorReport(appCfg), nil), nil
 	case "preview":
 		var args struct {
-			Input  string  `json:"input"`
-			FPS    float64 `json:"fps"`
-			Format string  `json:"format"`
-			Mode   string  `json:"mode"`
+			Input         string  `json:"input"`
+			FPS           float64 `json:"fps"`
+			Format        string  `json:"format"`
+			Mode          string  `json:"mode"`
+			Preset        string  `json:"preset"`
+			ChunkDuration int     `json:"chunk_duration"`
 		}
 		_ = json.Unmarshal(argsRaw, &args)
 		if strings.TrimSpace(args.Input) == "" {
@@ -2437,17 +3466,15 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		if err := ensureMCPPathAllowed(args.Input); err != nil {
 			return nil, err
 		}
-		if args.FPS <= 0 {
-			args.FPS = appCfg.DefaultFPS
-		}
-		if strings.TrimSpace(args.Format) == "" {
-			args.Format = appCfg.DefaultFormat
-		}
 		if strings.TrimSpace(args.Mode) == "" {
 			args.Mode = "both"
 		}
+		presetExplicit := strings.TrimSpace(args.Preset) != ""
+		if !presetExplicit {
+			args.Preset = appCfg.PerformanceMode
+		}
 		started := time.Now()
-		data, err := runPreviewResult(args.Input, args.FPS, args.Format, args.Mode)
+		data, err := runPreviewResult(args.Input, args.FPS, args.Format, args.Mode, args.Preset, args.ChunkDuration, args.FPS > 0, strings.TrimSpace(args.Format) != "", presetExplicit, args.ChunkDuration > 0)
 		if err != nil {
 			if ctx != nil && ctx.Err() != nil {
 				return nil, ctx.Err()
@@ -2470,6 +3497,8 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			FrameEnd           int     `json:"frame_end"`
 			EveryN             int     `json:"every_n"`
 			NameTemplate       string  `json:"name_template"`
+			ChunkDuration      int     `json:"chunk_duration"`
+			AllowExpensive     bool    `json:"allow_expensive"`
 			TranscribeBackend  string  `json:"transcribe_backend"`
 			TranscribeBin      string  `json:"transcribe_bin"`
 			TranscribeLanguage string  `json:"transcribe_language"`
@@ -2481,16 +3510,19 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		if err := ensureMCPPathAllowed(args.Input); err != nil {
 			return nil, err
 		}
+		fpsExplicit := args.FPS > 0
+		formatExplicit := strings.TrimSpace(args.Format) != ""
+		presetExplicit := strings.TrimSpace(args.Preset) != ""
 		if args.FPS <= 0 {
 			args.FPS = appCfg.DefaultFPS
 		}
-		if strings.TrimSpace(args.Format) == "" {
+		if !formatExplicit {
 			args.Format = appCfg.DefaultFormat
 		}
 		if strings.TrimSpace(args.HWAccel) == "" {
 			args.HWAccel = appCfg.HWAccel
 		}
-		if strings.TrimSpace(args.Preset) == "" {
+		if !presetExplicit {
 			args.Preset = appCfg.PerformanceMode
 		}
 		if strings.TrimSpace(args.TranscribeBackend) == "" {
@@ -2510,14 +3542,20 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			OutDir:             args.Out,
 			Voice:              args.Voice,
 			FrameFormat:        args.Format,
+			FormatExplicit:     formatExplicit,
 			HWAccel:            args.HWAccel,
 			Preset:             args.Preset,
+			PresetExplicit:     presetExplicit,
+			FPSExplicit:        fpsExplicit,
 			StartTime:          args.From,
 			EndTime:            args.To,
 			StartFrame:         args.FrameStart,
 			EndFrame:           args.FrameEnd,
 			EveryN:             args.EveryN,
 			FrameName:          args.NameTemplate,
+			ChunkDurationSec:   args.ChunkDuration,
+			ChunkExplicit:      args.ChunkDuration > 0,
+			AllowExpensive:     args.AllowExpensive,
 			TranscribeBackend:  args.TranscribeBackend,
 			TranscribeBin:      args.TranscribeBin,
 			TranscribeLanguage: args.TranscribeLanguage,
@@ -2538,6 +3576,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			FPS                float64  `json:"fps"`
 			Voice              bool     `json:"voice"`
 			Format             string   `json:"format"`
+			Preset             string   `json:"preset"`
+			ChunkDuration      int      `json:"chunk_duration"`
+			AllowExpensive     bool     `json:"allow_expensive"`
 			TranscribeBackend  string   `json:"transcribe_backend"`
 			TranscribeBin      string   `json:"transcribe_bin"`
 			TranscribeLanguage string   `json:"transcribe_language"`
@@ -2575,11 +3616,17 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		if len(args.Inputs) == 0 {
 			return nil, fmt.Errorf("extract_batch requires inputs (or configured agent_input_dirs)")
 		}
+		fpsExplicit := args.FPS > 0
 		if args.FPS <= 0 {
 			args.FPS = appCfg.DefaultFPS
 		}
-		if strings.TrimSpace(args.Format) == "" {
+		formatExplicit := strings.TrimSpace(args.Format) != ""
+		presetExplicit := strings.TrimSpace(args.Preset) != ""
+		if !formatExplicit {
 			args.Format = appCfg.DefaultFormat
+		}
+		if !presetExplicit {
+			args.Preset = appCfg.PerformanceMode
 		}
 		if strings.TrimSpace(args.TranscribeBackend) == "" {
 			args.TranscribeBackend = appCfg.TranscribeBackend
@@ -2603,13 +3650,19 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			res, err := runExtractWorkflowResult(ctx, v, args.FPS, extractWorkflowOptions{
 				Voice:              args.Voice,
 				FrameFormat:        args.Format,
+				FormatExplicit:     formatExplicit,
 				TranscribeBackend:  args.TranscribeBackend,
 				TranscribeBin:      args.TranscribeBin,
 				TranscribeLanguage: args.TranscribeLanguage,
+				ChunkDurationSec:   args.ChunkDuration,
+				ChunkExplicit:      args.ChunkDuration > 0,
+				AllowExpensive:     args.AllowExpensive,
 				JPGQuality:         3,
 				SheetCols:          6,
 				HWAccel:            appCfg.HWAccel,
-				Preset:             appCfg.PerformanceMode,
+				Preset:             args.Preset,
+				PresetExplicit:     presetExplicit,
+				FPSExplicit:        fpsExplicit,
 				OutDir:             outDir,
 			}, false)
 			if err != nil {
@@ -2689,9 +3742,54 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			"root":      args.Root,
 			"artifacts": artifacts,
 		}, nil), nil
+	case "get_run_artifacts":
+		var args struct {
+			Root   string `json:"root"`
+			Run    string `json:"run"`
+			Recent int    `json:"recent"`
+		}
+		_ = json.Unmarshal(argsRaw, &args)
+		if strings.TrimSpace(args.Root) == "" && strings.TrimSpace(appCfg.AgentOutputRoot) != "" {
+			args.Root = appCfg.AgentOutputRoot
+		}
+		if strings.TrimSpace(args.Root) == "" {
+			args.Root = appCfg.FramesRoot
+		}
+		if strings.TrimSpace(args.Root) == "" {
+			args.Root = media.DefaultFramesRoot
+		}
+		if err := ensureMCPPathAllowed(args.Root); err != nil {
+			return nil, err
+		}
+		started := time.Now()
+		if args.Recent > 0 {
+			runs, err := media.RecentRuns(args.Root, args.Recent)
+			if err != nil {
+				return buildAutomationEnvelope("get_run_artifacts", started, "error", map[string]any{"root": args.Root, "recent": args.Recent}, err), nil
+			}
+			return buildAutomationEnvelope("get_run_artifacts", started, "success", map[string]any{
+				"root":  args.Root,
+				"index": media.IndexFilePath(args.Root),
+				"runs":  runs,
+			}, nil), nil
+		}
+		if strings.TrimSpace(args.Run) == "" {
+			args.Run = "latest"
+		}
+		run, err := media.SelectRun(args.Root, args.Run)
+		if err != nil {
+			return buildAutomationEnvelope("get_run_artifacts", started, "error", map[string]any{"root": args.Root, "run": args.Run}, err), nil
+		}
+		return buildAutomationEnvelope("get_run_artifacts", started, "success", map[string]any{
+			"root":      args.Root,
+			"index":     media.IndexFilePath(args.Root),
+			"run":       run,
+			"artifacts": runArtifactsPayload(run),
+		}, nil), nil
 	case "transcribe_run":
 		var args struct {
-			RunDir string `json:"run_dir"`
+			RunDir        string `json:"run_dir"`
+			ChunkDuration int    `json:"chunk_duration"`
 		}
 		_ = json.Unmarshal(argsRaw, &args)
 		if strings.TrimSpace(args.RunDir) == "" {
@@ -2702,11 +3800,12 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		}
 		started := time.Now()
 		res, err := runTranscribeRunResult(ctx, args.RunDir, media.TranscribeOptions{
-			Model:      appCfg.WhisperModel,
-			Backend:    appCfg.TranscribeBackend,
-			Language:   appCfg.WhisperLanguage,
-			TimeoutSec: 0,
-			Verbose:    false,
+			Model:            appCfg.WhisperModel,
+			Backend:          appCfg.TranscribeBackend,
+			Language:         appCfg.WhisperLanguage,
+			ChunkDurationSec: args.ChunkDuration,
+			TimeoutSec:       0,
+			Verbose:          false,
 		})
 		if err != nil {
 			if ctx != nil && ctx.Err() != nil {
@@ -2836,9 +3935,7 @@ func importCommand() *cobra.Command {
 			}
 			noModal, _ := cmd.Flags().GetBool("no-modal")
 			fps, _ := cmd.Flags().GetFloat64("fps")
-			if !cmd.Flags().Changed("fps") && appCfg.DefaultFPS > 0 {
-				fps = appCfg.DefaultFPS
-			}
+			fpsExplicit := cmd.Flags().Changed("fps")
 			outDir, _ := cmd.Flags().GetString("out")
 			voice, _ := cmd.Flags().GetBool("voice")
 			frameFormat, _ := cmd.Flags().GetString("format")
@@ -2851,6 +3948,7 @@ func importCommand() *cobra.Command {
 			verbose, _ := cmd.Flags().GetBool("verbose")
 			hwaccel, _ := cmd.Flags().GetString("hwaccel")
 			preset, _ := cmd.Flags().GetString("preset")
+			chunkDuration, _ := cmd.Flags().GetInt("chunk-duration")
 			startTime, _ := cmd.Flags().GetString("from")
 			endTime, _ := cmd.Flags().GetString("to")
 			startFrame, _ := cmd.Flags().GetInt("frame-start")
@@ -2869,6 +3967,7 @@ func importCommand() *cobra.Command {
 			transcribeBackend, _ := cmd.Flags().GetString("transcribe-backend")
 			transcribeBin, _ := cmd.Flags().GetString("transcribe-bin")
 			transcribeLanguage, _ := cmd.Flags().GetString("transcribe-language")
+			allowExpensive, _ := cmd.Flags().GetBool("allow-expensive")
 			if !cmd.Flags().Changed("hwaccel") {
 				hwaccel = appCfg.HWAccel
 			}
@@ -2879,12 +3978,15 @@ func importCommand() *cobra.Command {
 				OutDir:             outDir,
 				Voice:              voice,
 				FrameFormat:        frameFormat,
+				FormatExplicit:     cmd.Flags().Changed("format"),
 				JPGQuality:         jpgQuality,
 				NoSheet:            noSheet,
 				SheetCols:          sheetCols,
 				Verbose:            verbose,
 				HWAccel:            hwaccel,
 				Preset:             preset,
+				PresetExplicit:     cmd.Flags().Changed("preset"),
+				FPSExplicit:        fpsExplicit,
 				StartTime:          startTime,
 				EndTime:            endTime,
 				StartFrame:         startFrame,
@@ -2903,6 +4005,9 @@ func importCommand() *cobra.Command {
 				TranscribeBackend:  transcribeBackend,
 				TranscribeBin:      transcribeBin,
 				TranscribeLanguage: transcribeLanguage,
+				ChunkDurationSec:   chunkDuration,
+				ChunkExplicit:      cmd.Flags().Changed("chunk-duration"),
+				AllowExpensive:     allowExpensive,
 			}
 			if !noModal {
 				result, cancelled, err := runDropModal(videoPath, fps, opts)
@@ -2937,7 +4042,7 @@ func importCommand() *cobra.Command {
 	cmd.Flags().Bool("verbose", false, "Show raw ffmpeg/whisper logs")
 	cmd.Flags().Bool("no-modal", false, "Skip import config modal and run immediately")
 	cmd.Flags().String("hwaccel", appCfg.HWAccel, "Hardware acceleration mode: none|auto|cuda|vaapi|qsv")
-	cmd.Flags().String("preset", appCfg.PerformanceMode, "Performance mode: safe|balanced|fast")
+	cmd.Flags().String("preset", appCfg.PerformanceMode, "Workflow preset: laptop-safe|balanced|high-fidelity (legacy: safe|fast)")
 	cmd.Flags().String("from", "", "Start timestamp (e.g. 00:30 or seconds)")
 	cmd.Flags().String("to", "", "End timestamp (e.g. 01:45 or seconds)")
 	cmd.Flags().Int("frame-start", 0, "Source frame start index (inclusive)")
@@ -2956,6 +4061,8 @@ func importCommand() *cobra.Command {
 	cmd.Flags().String("transcribe-backend", appCfg.TranscribeBackend, "Transcription backend: auto|whisper|faster-whisper")
 	cmd.Flags().String("transcribe-bin", "", "Override transcription CLI binary path/name for selected backend")
 	cmd.Flags().String("transcribe-language", appCfg.WhisperLanguage, "Transcription language override (blank=auto)")
+	cmd.Flags().Int("chunk-duration", 0, "Split voice transcription into N-second chunks (0 uses preset default)")
+	cmd.Flags().Bool("allow-expensive", false, "Allow workloads that exceed long-input guardrails")
 	return cmd
 }
 
@@ -3022,26 +4129,31 @@ func transcribeCommand() *cobra.Command {
 			backend, _ := cmd.Flags().GetString("backend")
 			bin, _ := cmd.Flags().GetString("bin")
 			language, _ := cmd.Flags().GetString("language")
+			chunkDuration, _ := cmd.Flags().GetInt("chunk-duration")
 			appconfig.ApplyEnvDefaults(appCfg)
 			outDir := "voice"
 			if len(args) == 2 {
 				outDir = args[1]
 			}
-			txt, jsonPath, err := media.TranscribeAudioWithOptions(media.TranscribeOptions{
-				Context:   cmd.Context(),
-				AudioPath: args[0],
-				OutDir:    outDir,
-				Model:     model,
-				Backend:   backend,
-				Bin:       bin,
-				Language:  language,
-				Verbose:   verbose,
+			result, err := media.TranscribeAudioWithDetails(media.TranscribeOptions{
+				Context:          cmd.Context(),
+				AudioPath:        args[0],
+				OutDir:           outDir,
+				Model:            model,
+				Backend:          backend,
+				Bin:              bin,
+				Language:         language,
+				ChunkDurationSec: chunkDuration,
+				Verbose:          verbose,
 			})
 			if err != nil {
 				failf("Transcription failed: %v\n", err)
 				return
 			}
-			fmt.Printf("Transcript: %s\nJSON: %s\n", txt, jsonPath)
+			fmt.Printf("Transcript: %s\nJSON: %s\n", result.TranscriptTxt, result.TranscriptJSON)
+			if result.ManifestPath != "" {
+				fmt.Printf("Manifest: %s\n", result.ManifestPath)
+			}
 		},
 	}
 	cmd.Flags().Bool("verbose", false, "Show raw transcription backend logs")
@@ -3049,6 +4161,7 @@ func transcribeCommand() *cobra.Command {
 	cmd.Flags().String("backend", appCfg.TranscribeBackend, "Transcription backend: auto|whisper|faster-whisper")
 	cmd.Flags().String("bin", "", "Override transcription CLI binary path/name for selected backend")
 	cmd.Flags().String("language", appCfg.WhisperLanguage, "Transcription language override (blank=auto)")
+	cmd.Flags().Int("chunk-duration", 0, "Split transcription into N-second chunks and persist resume manifest (0 disables chunking)")
 	return cmd
 }
 
@@ -3064,16 +4177,18 @@ func transcribeRunCommand() *cobra.Command {
 			backend, _ := cmd.Flags().GetString("backend")
 			bin, _ := cmd.Flags().GetString("bin")
 			language, _ := cmd.Flags().GetString("language")
+			chunkDuration, _ := cmd.Flags().GetInt("chunk-duration")
 			timeoutSec, _ := cmd.Flags().GetInt("timeout")
 			jsonOut, _ := cmd.Flags().GetBool("json")
 			appconfig.ApplyEnvDefaults(appCfg)
 			result, err := runTranscribeRunResult(cmd.Context(), args[0], media.TranscribeOptions{
-				Model:      model,
-				Backend:    backend,
-				Bin:        bin,
-				Language:   language,
-				TimeoutSec: timeoutSec,
-				Verbose:    verbose,
+				Model:            model,
+				Backend:          backend,
+				Bin:              bin,
+				Language:         language,
+				ChunkDurationSec: chunkDuration,
+				TimeoutSec:       timeoutSec,
+				Verbose:          verbose,
 			})
 			if err != nil {
 				if jsonOut {
@@ -3089,7 +4204,7 @@ func transcribeRunCommand() *cobra.Command {
 					markCommandInterrupted()
 					fmt.Fprintln(os.Stderr, "Cancelled.")
 				} else {
-					failf("Transcribe-run failed: %v\n", err)
+					failf("%s\n", renderUserFacingError(err))
 				}
 				return
 			}
@@ -3102,9 +4217,15 @@ func transcribeRunCommand() *cobra.Command {
 				if result.TranscriptTxt != "" {
 					fmt.Printf("Transcript: %s\n", result.TranscriptTxt)
 				}
+				if result.ManifestPath != "" {
+					fmt.Printf("Manifest: %s\n", result.ManifestPath)
+				}
 				return
 			}
 			fmt.Printf("Transcript: %s\nJSON: %s\n", result.TranscriptTxt, result.TranscriptJSON)
+			if result.ManifestPath != "" {
+				fmt.Printf("Manifest: %s\n", result.ManifestPath)
+			}
 		},
 	}
 	cmd.Flags().Bool("verbose", false, "Show raw transcription backend logs")
@@ -3112,6 +4233,7 @@ func transcribeRunCommand() *cobra.Command {
 	cmd.Flags().String("backend", appCfg.TranscribeBackend, "Transcription backend: auto|whisper|faster-whisper")
 	cmd.Flags().String("bin", "", "Override transcription CLI binary path/name for selected backend")
 	cmd.Flags().String("language", appCfg.WhisperLanguage, "Transcription language override (blank=auto)")
+	cmd.Flags().Int("chunk-duration", 0, "Split transcription into N-second chunks and persist resume manifest (0 disables chunking)")
 	cmd.Flags().Int("timeout", 0, "Stop transcription if it runs longer than N seconds (0 disables timeout)")
 	cmd.Flags().Bool("json", false, "Output machine-readable JSON")
 	return cmd
@@ -3127,7 +4249,7 @@ func tuiCommand() *cobra.Command {
 				rootDir = appCfg.FramesRoot
 			}
 			if err := tui.Run(rootDir); err != nil {
-				failf("TUI failed: %v\n", err)
+				failf("TUI failed: %s\n", renderUserFacingError(err))
 			}
 		},
 	}
@@ -3199,8 +4321,11 @@ type doctorReport struct {
 	Environment              map[string]string             `json:"environment"`
 	Tools                    []toolCheck                   `json:"tools"`
 	GPUAvailable             bool                          `json:"gpu_available"`
+	TranscribeBackend        string                        `json:"transcribe_backend"`
 	WhisperModel             string                        `json:"whisper_model"`
 	EstimatedTranscribeSpeed string                        `json:"estimated_transcribe_speed"`
+	TranscribeRuntimeClass   string                        `json:"transcribe_runtime_class"`
+	TranscribeCostHint       string                        `json:"transcribe_cost_hint"`
 	FFmpegVersion            string                        `json:"ffmpeg_version,omitempty"`
 	FFmpegVersionError       string                        `json:"ffmpeg_version_error,omitempty"`
 	FFmpegHWAccels           []string                      `json:"ffmpeg_hwaccels,omitempty"`
@@ -3248,11 +4373,11 @@ func collectDoctorReport(cfg appconfig.Config) doctorReport {
 			"TRANSCRIBE_BACKEND": valueOrDash(os.Getenv("TRANSCRIBE_BACKEND")),
 		},
 	}
-	if r.GPUAvailable {
-		r.EstimatedTranscribeSpeed = "fast"
-	} else {
-		r.EstimatedTranscribeSpeed = "slow (no GPU)"
-	}
+	transcriptPlan := buildTranscriptPlan(0, cfg, r.GPUAvailable)
+	r.TranscribeBackend = transcriptPlan.Backend
+	r.EstimatedTranscribeSpeed = transcriptPlan.RuntimeClass
+	r.TranscribeRuntimeClass = transcriptPlan.RuntimeClass
+	r.TranscribeCostHint = transcriptPlan.CostHint
 	if cfgPath, err := appconfig.Path(); err == nil {
 		r.ConfigPath = cfgPath
 	}
@@ -3324,8 +4449,10 @@ func printDoctorReport(r doctorReport) {
 	fmt.Printf("WHISPER_LANGUAGE:  %s\n", valueOrDash(r.Environment["WHISPER_LANGUAGE"]))
 	fmt.Printf("TRANSCRIBE_BACKEND:%s\n", valueOrDash(r.Environment["TRANSCRIBE_BACKEND"]))
 	fmt.Printf("GPU_AVAILABLE:     %t\n", r.GPUAvailable)
+	fmt.Printf("TRANSCRIBE_RESOLVED:%s\n", valueOrDash(r.TranscribeBackend))
 	fmt.Printf("WHISPER_MODEL_CFG: %s\n", valueOrDash(r.WhisperModel))
 	fmt.Printf("TRANSCRIBE_SPEED:  %s\n", valueOrDash(r.EstimatedTranscribeSpeed))
+	fmt.Printf("TRANSCRIBE_HINT:   %s\n", valueOrDash(r.TranscribeCostHint))
 	if strings.TrimSpace(r.FFmpegVersion) != "" {
 		fmt.Printf("FFMPEG_VERSION:    %s\n", r.FFmpegVersion)
 	} else {
@@ -3898,7 +5025,7 @@ func setupCommand() *cobra.Command {
 	cmd.Flags().Float64Var(&defaultFPS, "default-fps", appCfg.DefaultFPS, "Default extraction FPS")
 	cmd.Flags().StringVar(&defaultFormat, "default-format", appCfg.DefaultFormat, "Default frame format (png/jpg)")
 	cmd.Flags().StringVar(&hwaccel, "hwaccel", appCfg.HWAccel, "Default hardware acceleration mode: none|auto|cuda|vaapi|qsv")
-	cmd.Flags().StringVar(&performanceMode, "performance-mode", appCfg.PerformanceMode, "Default performance mode: safe|balanced|fast")
+	cmd.Flags().StringVar(&performanceMode, "performance-mode", appCfg.PerformanceMode, "Default workflow preset: laptop-safe|balanced|high-fidelity (legacy: safe|fast)")
 	cmd.Flags().StringVar(&whisperBin, "whisper-bin", appCfg.WhisperBin, "Whisper executable name/path")
 	cmd.Flags().StringVar(&fasterWhisperBin, "faster-whisper-bin", appCfg.FasterWhisperBin, "Faster-Whisper executable name/path")
 	cmd.Flags().StringVar(&whisperModel, "whisper-model", appCfg.WhisperModel, "Default Whisper model")
@@ -3923,6 +5050,10 @@ func resolveVideoInput(input string) (string, string, error) {
 			return "", "", err
 		}
 		return recentPath, "recent from " + sourceDir, nil
+	}
+	normalized := media.NormalizeVideoPath(videoPath)
+	if normalized != videoPath {
+		return normalized, "normalized from Windows path", nil
 	}
 	return videoPath, "", nil
 }

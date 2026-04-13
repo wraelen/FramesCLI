@@ -1,0 +1,4 @@
+interface:
+  display_name: "FramesCLI"
+  short_description: "Turn local recordings into agent-ready artifacts"
+  default_prompt: "Use $framescli to inspect a local recording and produce frames, transcripts, and artifact paths."

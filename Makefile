@@ -1,7 +1,7 @@
 BINARY ?= framescli
 OUT_DIR ?= bin
 
-.PHONY: build deps deps-whisper smoke-public test test-integration smoke preflight fmt tidy run verify release-snapshot
+.PHONY: build deps deps-whisper smoke-public test test-integration smoke preflight fmt tidy run verify release-snapshot release-verify
 
 build:
 	mkdir -p $(OUT_DIR)
@@ -44,3 +44,6 @@ verify: tidy fmt test build
 
 release-snapshot:
 	goreleaser release --snapshot --clean
+
+release-verify:
+	./scripts/release-verify.sh --source dist --dist-dir ./dist

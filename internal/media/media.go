@@ -205,6 +205,9 @@ func ExtractMedia(opts ExtractMediaOptions) (*ExtractMediaResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ffprobe failed for %q: %w", opts.VideoPath, err)
 	}
+	if opts.ExtractAudio && !videoInfo.HasAudio {
+		return nil, noAudioRequestedError(videoPath)
+	}
 	outDir := opts.OutDir
 	if outDir == "" {
 		timestamp := makeRunFolderName(time.Now())
@@ -445,6 +448,14 @@ func ExtractAudioFromVideoWithOptions(opts ExtractAudioOptions) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	info, err := ProbeVideoInfo(videoPath)
+	if err != nil {
+		return "", fmt.Errorf("ffprobe failed for %q: %w", opts.VideoPath, err)
+	}
+	if !info.HasAudio {
+		return "", noAudioRequestedError(videoPath)
+	}
+
 	args := []string{
 		"-y",
 		"-i",
@@ -482,15 +493,16 @@ func TranscribeAudio(audioPath string, outDir string, verbose bool) (string, str
 }
 
 type TranscribeOptions struct {
-	Context    context.Context
-	AudioPath  string
-	OutDir     string
-	Model      string
-	Language   string
-	Bin        string
-	Backend    string
-	TimeoutSec int
-	Verbose    bool
+	Context          context.Context
+	AudioPath        string
+	OutDir           string
+	Model            string
+	Language         string
+	Bin              string
+	Backend          string
+	ChunkDurationSec int
+	TimeoutSec       int
+	Verbose          bool
 }
 
 type ErrTranscribeTimeout struct {
@@ -639,6 +651,14 @@ func whisperModelDownloadSize(model string) string {
 }
 
 func TranscribeAudioWithOptions(opts TranscribeOptions) (string, string, error) {
+	result, err := TranscribeAudioWithDetails(opts)
+	if err != nil {
+		return "", "", err
+	}
+	return result.TranscriptTxt, result.TranscriptJSON, nil
+}
+
+func transcribeAudioOnce(opts TranscribeOptions) (string, string, error) {
 	audioPath := opts.AudioPath
 	outDir := opts.OutDir
 	verbose := opts.Verbose
@@ -1406,6 +1426,10 @@ func normalizeAudioFormat(v string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported audio format %q (use wav|mp3|aac)", v)
 	}
+}
+
+func noAudioRequestedError(videoPath string) error {
+	return fmt.Errorf("requested audio output, but video has no audio stream: %s", videoPath)
 }
 
 func parseRate(v string) (float64, bool) {

@@ -192,6 +192,38 @@ func TestPresetProfilesNormalize(t *testing.T) {
 	}
 }
 
+func TestPerformanceModeSafeAliasNormalizes(t *testing.T) {
+	cfg := Default()
+	cfg.PerformanceMode = "safe"
+	cfg.PresetProfiles = map[string]PresetProfile{
+		"legacy": {Preset: "safe", Format: "jpeg"},
+	}
+	normalize(&cfg)
+	if cfg.PerformanceMode != "laptop-safe" {
+		t.Fatalf("expected safe alias to normalize to laptop-safe, got %q", cfg.PerformanceMode)
+	}
+	if got := cfg.PresetProfiles["legacy"]; got.Preset != "laptop-safe" || got.Format != "jpg" {
+		t.Fatalf("expected preset profile alias normalization, got %+v", got)
+	}
+}
+
+func TestBuiltInPresetProfilesMigrateForward(t *testing.T) {
+	cfg := Default()
+	cfg.PresetProfiles = map[string]PresetProfile{
+		"balanced":      {Preset: "balanced", Format: "png"},
+		"fast":          {Preset: "fast", Format: "jpg", NoSheet: true},
+		"high-fidelity": {Preset: "safe", Format: "png", Voice: true},
+	}
+	normalize(&cfg)
+	got := cfg.PresetProfiles["high-fidelity"]
+	if got.Preset != "high-fidelity" || got.Format != "png" || !got.Voice || got.NoSheet {
+		t.Fatalf("expected built-in high-fidelity profile to migrate forward, got %+v", got)
+	}
+	if _, ok := cfg.PresetProfiles["laptop-safe"]; !ok {
+		t.Fatalf("expected missing built-in laptop-safe profile to be restored")
+	}
+}
+
 func TestAgentPathPreferencesPersist(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "cfg-agent-paths.json")

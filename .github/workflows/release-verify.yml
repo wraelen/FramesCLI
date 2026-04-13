@@ -1,0 +1,22 @@
+name: release-verify
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to verify (for example: v0.1.0)
+        required: true
+
+jobs:
+  verify-published-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify published release artifacts
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.version }}
+        run: ./scripts/release-verify.sh --source github --version "${RELEASE_TAG}"

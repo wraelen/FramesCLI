@@ -4,7 +4,6 @@ package media
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -66,35 +65,4 @@ func TestIntegrationBenchmarkExtraction(t *testing.T) {
 	if !report.Results[0].Success {
 		t.Fatalf("expected benchmark success, got error: %s", report.Results[0].Error)
 	}
-}
-
-func requireFFmpegTools(t *testing.T) {
-	t.Helper()
-	for _, bin := range []string{"ffmpeg", "ffprobe"} {
-		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("%s not installed: %v", bin, err)
-		}
-	}
-}
-
-func makeSampleVideo(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "sample.mp4")
-	args := []string{
-		"-y",
-		"-f", "lavfi",
-		"-i", "testsrc=size=320x240:rate=10",
-		"-f", "lavfi",
-		"-i", "sine=frequency=1000:sample_rate=16000",
-		"-t", "2",
-		"-pix_fmt", "yuv420p",
-		"-c:v", "libx264",
-		"-c:a", "aac",
-		path,
-	}
-	cmd := exec.Command("ffmpeg", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("failed generating sample video: %v\n%s", err, string(out))
-	}
-	return path
 }

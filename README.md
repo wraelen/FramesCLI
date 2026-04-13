@@ -1,7 +1,7 @@
 # FramesCLI
 
 <p align="center">
-  <img src="brand/exports/logo-hero.svg" alt="FramesCLI" width="220">
+  <img src="brand/exports/logo-readme.svg" alt="FramesCLI" width="320">
 </p>
 
 Turn screen recordings into agent-ready artifacts: frame timelines, contact sheets, metadata, audio, and transcripts.
@@ -44,6 +44,8 @@ FramesCLI is a Go CLI + TUI built for debugging, troubleshooting, and coding-ses
 
 Recommended for most users: run the one-command bootstrap installer. It installs the latest release binary, can help install `ffmpeg`/`ffprobe`, and can launch `framescli setup` for first-run preferences.
 
+The release installer now verifies the downloaded archive against the published `checksums.txt` before extraction.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/wraelen/framescli/main/scripts/install-release.sh | bash
 ```
@@ -81,7 +83,7 @@ Notes:
 
 - The release installer places `framescli` into `~/.local/bin` by default.
 - After binary install, the bootstrap flow can run `doctor` and launch `framescli setup`.
-- Package-manager distribution (`apt`, Homebrew, winget, etc.) is not set up yet.
+- Package-manager distribution (`apt`, Homebrew, winget, etc.) is intentionally deferred for now; the maintained install path is checksum-verified GitHub release binaries.
 - The local repo build helper remains available at `./scripts/install.sh`.
 
 ### Dependency Install
@@ -159,6 +161,20 @@ Run this before opening issues or publishing a release candidate:
 
 Outputs are written to `tmp/public-smoke/` (doctor, preview, extract, batch, open-last, MCP smoke).
 
+### Release Verification
+
+For maintainers, validate release artifacts separately from source-level tests:
+
+```bash
+# After goreleaser snapshot output exists in ./dist
+make release-verify
+
+# After publishing a real GitHub release
+./scripts/release-verify.sh --source github --version v0.1.0
+```
+
+This verifies published checksums, expected archive contents, installer asset resolution, and a runtime smoke check for the current platform binary.
+
 ## 60-Second Quickstart
 
 ```bash
@@ -171,21 +187,23 @@ framescli preview /path/to/recording.mp4 --mode both --json
 # 3) Extract frames + transcript
 framescli extract /path/to/recording.mp4 --voice --json
 
-# 4) Open key artifact
-framescli open-last --artifact transcript
+# 4) Inspect indexed artifacts for the latest run
+framescli artifacts latest
 ```
 
 ## Command Overview
 
 ```bash
-framescli extract <videoPath|recent> [fps] [--voice] [--format png|jpg] [--quality 1-31]
-framescli extract-batch <videoPathOrGlob...> [--voice] [--from 00:30 --to 01:45]
-framescli preview <videoPath|recent> [--fps 4 --format png --mode both]
-framescli open-last [--artifact run|transcript|sheet|log|metadata|audio]
-framescli copy-last [--artifact run|transcript|sheet|log|metadata|audio]
+framescli extract <videoPath|recent> [fps] [--preset balanced] [--voice] [--format png|jpg] [--quality 1-31]
+framescli extract-batch <videoPathOrGlob...> [--preset balanced] [--fps auto] [--voice] [--from 00:30 --to 01:45]
+framescli preview <videoPath|recent> [--preset balanced] [--fps auto --format png --mode both]
+framescli artifacts [run|latest] [--recent 5] [--json]
+framescli open-last [--artifact run|transcript|transcript-json|transcript-srt|transcript-vtt|sheet|log|metadata|frames|manifest|metadata-csv|frames-zip|audio]
+framescli copy-last [--artifact run|transcript|transcript-json|transcript-srt|transcript-vtt|sheet|log|metadata|frames|manifest|metadata-csv|frames-zip|audio]
 framescli import [videoPath] [--voice] [--fps 4] [--format png|jpg] [--no-modal]
 framescli sheet <framesDir> [--cols 6] [--out contact-sheet.png]
-framescli transcribe <audioPath> [outDir]
+framescli transcribe <audioPath> [outDir] [--chunk-duration 600]
+framescli transcribe-run <runDir> [--chunk-duration 600] [--timeout 300] [--json]
 framescli clean [targetDir]
 framescli tui [--root frames]
 framescli doctor [--json] [--report] [--report-out path]
@@ -203,7 +221,132 @@ framescli completion <bash|zsh|fish|powershell>
 
 Primary command name is `framescli`.
 
+## Artifact Index
+
+FramesCLI persists a local run-artifact index at `<frames_root>/index.json`. It is refreshed automatically after successful `extract` and `transcribe-run` workflows, and you can rebuild it explicitly with:
+
+```bash
+framescli index [rootDir]
+```
+
+The index stays inspectable JSON and records only retrieval-oriented fields for each run, including:
+
+- run directory, created/updated time, and source video path
+- fps, frame format, preset, duration, and derived run status
+- key artifact paths such as `run.json`, `frames.json`, transcript outputs, audio, contact sheet, manifest, log, CSV, and zip outputs when present
+- chunked-transcription progress metadata and simple warning flags for partial runs
+
+Use it from the CLI with:
+
+```bash
+framescli artifacts latest
+framescli artifacts Run_20260102-150405 --json
+framescli artifacts --recent 5
+framescli open-last --artifact transcript-json
+framescli copy-last --artifact manifest
+```
+
+Current limitation: if run directories are edited manually outside FramesCLI, the index will not update until the next successful run completion or an explicit `framescli index` rebuild.
+
 ## Common Workflows
+
+### Preview Workload Cost
+
+Use `preview` before expensive runs to inspect approximate frame volume, disk footprint, transcript cost, preset defaults, and risk hints:
+
+```bash
+framescli preview /path/to/video.mp4 --preset laptop-safe --mode both
+```
+
+Example human-readable output:
+
+```text
+Preview
+-------
+Video:       /path/to/video.mp4
+Duration:    1800.00s
+Resolution:  1920x1080
+Source FPS:  29.97
+Mode:        both
+Preset:      laptop-safe (media=safe)
+Target FPS:  1.00
+Format:      jpg
+Chunking:    300s
+Frames est:  1800
+Disk est:    ~103-230 MB for extracted frames + sheet
+Artifacts:
+- images/frame-XXXX.jpg
+- images/sheets/contact-sheet.png
+- run.json + frames.json
+- voice/voice.wav
+- voice/transcript.{txt,json,srt,vtt}
+Common disk profiles:
+* jpg          1.00fps ~103-230 MB selected (1800 frames)
+- png          1.00fps ~206-459 MB png @ 1fps (1800 frames)
+Transcript:
+- backend=faster-whisper model=base hardware=gpu-capable
+- class=fast
+- hint=GPU-backed transcription should stay well below video runtime in common cases
+- runtime=~2.1-3.8 minutes of transcript time for this clip
+Guardrails:
+- [warn] Recording duration exceeds 2 hours; preview estimates should be reviewed before extraction. (duration_minutes=180.0, threshold >= 120)
+```
+
+JSON output exposes the same estimates for agents and scripts:
+
+```bash
+framescli preview /path/to/video.mp4 --preset laptop-safe --mode both --json
+```
+
+Example JSON excerpt:
+
+```json
+{
+  "command": "preview",
+  "status": "success",
+  "data": {
+    "preset": "laptop-safe",
+    "media_preset": "safe",
+    "target_fps": 1,
+    "format": "jpg",
+    "chunk_duration_sec": 300,
+    "estimate": {
+      "frame_count": 1800,
+      "estimated_mb": 166.3,
+      "estimated_mb_low": 102.9,
+      "estimated_mb_high": 229.6,
+      "disk_summary": "~103-230 MB for extracted frames + sheet",
+      "disk_profiles": [
+        {
+          "label": "selected",
+          "format": "jpg",
+          "fps": 1,
+          "frame_count": 1800,
+          "disk_summary": "~103-230 MB",
+          "selected": true
+        }
+      ],
+      "transcript": {
+        "enabled": true,
+        "backend": "faster-whisper",
+        "runtime_class": "fast",
+        "cost_hint": "GPU-backed transcription should stay well below video runtime in common cases",
+        "chunk_duration_sec": 300
+      },
+      "guardrails": {
+        "guardrails": [
+          {
+            "severity": "warn",
+            "metric": "duration_minutes",
+            "actual": "180.0",
+            "threshold": ">= 120"
+          }
+        ]
+      }
+    }
+  }
+}
+```
 
 ### Extract Frames at Intervals
 
@@ -211,6 +354,26 @@ Primary command name is `framescli`.
 framescli extract /path/to/video.mp4 --fps 2 --format png
 framescli extract /path/to/video.mp4 --every-n 10 --name-template "frame-%05d"
 ```
+
+### Workflow Presets
+
+FramesCLI now exposes explicit workflow presets:
+
+- `laptop-safe`: `1fps`, `jpg`, ffmpeg media preset `safe`, transcript chunking `300s`
+- `balanced`: `4fps`, `png`, ffmpeg media preset `balanced`, transcript chunking `600s`
+- `high-fidelity`: `8fps`, `png`, ffmpeg media preset `fast`, transcript chunking `900s`
+
+Explicit flags still win. For example, `--preset laptop-safe --fps 3 --format png --chunk-duration 1200` keeps the preset's media-tuning choice while honoring the user-provided sampling, format, and chunk size.
+
+Configured defaults are applied coherently:
+
+- if `performance-mode` is set to one of the workflow presets and `default-fps` / `default-format` are still at the stock defaults, the preset sampling and format apply implicitly
+- if you set custom `default-fps` or `default-format` in config, those remain the default for omitted flags and only the preset's media-tuning and transcript chunking are applied implicitly
+
+Legacy preset names remain accepted for compatibility:
+
+- `safe` maps to `laptop-safe`
+- `fast` remains available as a legacy speed-first preset
 
 ### Extract by Time or Frame Range
 
@@ -229,6 +392,42 @@ framescli extract /path/to/video.mp4 \
   --audio-to 01:20 \
   --normalize-audio
 ```
+
+For long recordings, run transcription in resumable chunks:
+
+```bash
+framescli transcribe-run /path/to/run --chunk-duration 600 --json
+```
+
+This writes `voice/transcription-manifest.json` plus per-chunk outputs under `voice/chunks/`. Re-running `transcribe-run` resumes from the manifest and does not redo completed chunks.
+
+When `extract --voice` runs through a workflow preset, FramesCLI now applies preset chunking automatically unless `--chunk-duration` is specified explicitly.
+
+### Expensive Workload Guardrails
+
+FramesCLI warns or blocks long-input workloads using measurable thresholds surfaced by `preview` and JSON output.
+
+Warning thresholds:
+
+- estimated frames `>= 20000`
+- estimated extracted frame disk usage `>= 2 GB`
+- duration `>= 2 hours`
+- CPU-only transcript path in `slow` or `heavy` runtime classes on recordings `>= 30 minutes`
+
+Blocking thresholds that require `--allow-expensive`:
+
+- estimated frames `>= 40000`
+- estimated extracted frame disk usage `>= 4 GB`
+- duration `>= 3 hours`
+- CPU-only transcript path in `slow` or `heavy` runtime classes on recordings `>= 45 minutes` without chunking
+
+Override path:
+
+```bash
+framescli extract /path/to/video.mp4 --preset high-fidelity --voice --allow-expensive
+```
+
+`--allow-expensive` preserves expert control. It disables the blocking gate, but FramesCLI still emits the same guardrail details in preview and JSON output so the cost remains explicit.
 
 ### Batch Processing
 
@@ -304,6 +503,7 @@ For local AI coding agents, treat these as the API surface:
 
 - `framescli mcp` is the preferred structured integration
 - `--json` CLI commands are the fallback when MCP is unavailable
+- Detailed copy-paste MCP and CLI recipes live in `docs/AGENT_RECIPES.md`
 
 A separate HTTP API is not included right now because it adds deployment, auth, and lifecycle overhead without improving the local agent workflow this project is built for.
 
@@ -322,14 +522,19 @@ Then have your agent call tools in this order:
 1. `prefs_set` with `input_dirs` and `output_root`
 2. `preview` for the target video path
 3. `extract` (or `extract_batch`) with `voice=true` when transcript is needed
-4. `get_latest_artifacts` to ingest paths
+4. `transcribe_run` if a previous run needs transcript recovery
+5. `get_run_artifacts` for the indexed latest-run view; use `get_latest_artifacts` only when you need the compact latest-path map
 
 ### CLI JSON Contract
 
-- `extract`, `extract-batch`, and `preview` support `--json`
+- `extract`, `extract-batch`, `preview`, `doctor`, `open-last`, and `transcribe-run` support `--json`
 - Envelope includes: `schema_version`, `command`, `status`, timing, `data`, optional `error`
+- `error.code` remains `command_failed`; newer clients can also read `error.class`, `error.recovery`, and `error.retryable`
 - Schema version: `framescli.v1`
 - Command failures return non-zero exit codes, including JSON-mode failures/partials
+- Prefer `--transcribe-timeout <seconds>` for agent flows so transcript delays do not stall the whole run
+- `preview` is a workload estimate only; if the source has no audio stream, `extract --voice` and `transcribe-run` still fail with a stable no-audio error
+- `open-last` and `copy-last` accept `run`, `transcript`, `transcript-json`, `transcript-srt`, `transcript-vtt`, `sheet`, `log`, `metadata`, `frames`, `manifest`, `metadata-csv`, `frames-zip`, and `audio`
 
 ### MCP Server
 
@@ -344,9 +549,11 @@ Tools:
 - `preview`
 - `extract`
 - `extract_batch`
+- `transcribe_run`
 - `doctor`
 - `open_last`
 - `get_latest_artifacts`
+- `get_run_artifacts`
 - `prefs_get`
 - `prefs_set`
 
@@ -374,6 +581,7 @@ Path safety:
 
 - MCP access is local-only
 - Path arguments are restricted to configured allowed roots + current working directory
+- JSON-RPC error `code` and `message` remain stable; newer clients can also read `error.data.class`, `error.data.recovery`, and `error.data.retryable`
 
 ## Output Layout
 
@@ -384,11 +592,18 @@ frames/<RunName>/
     sheets/contact-sheet.png
   voice/
     voice.wav
+    transcription-manifest.json
+    chunks/
+      chunk-0000/
+      chunk-0001/
     transcript.txt
     transcript.json
     transcript.srt
     transcript.vtt
+index.json
 ```
+
+Chunked transcription keeps final merged artifacts at the existing `voice/transcript.*` paths. Current limitation: merged `srt`/`vtt` are only written when chunk JSON includes segment timings.
 
 Failed-run diagnostics are exported under `frames/diagnostics/diag-*.json`.
 
@@ -413,7 +628,7 @@ framescli benchmark history --limit 20
 Recommended baseline starting points:
 
 - Linux desktop/workstation: `--hwaccel auto --preset balanced`
-- Linux headless/CI: `--hwaccel none --preset safe`
+- Linux headless/CI: `--hwaccel none --preset laptop-safe`
 - macOS: `--hwaccel auto --preset balanced`
 - WSL: `--hwaccel none --preset balanced`
 
@@ -463,8 +678,12 @@ framescli telemetry prune --keep 2000
 ```bash
 make preflight
 go test ./...
-go test -tags integration ./internal/media
+go test ./cmd/frames
+go test ./internal/media
+go test -tags=integration ./internal/media
 ```
+
+For MCP-only coverage, `go test ./cmd/frames -run 'TestMCPServer|TestMCPHelperProcess'` exercises the stdio harness in `cmd/frames/mcp_integration_test.go`. That harness runs `framescli mcp` with fake `ffmpeg`, `ffprobe`, and `whisper` binaries so handshake, `doctor`, `preview`, heartbeat, cancellation, timeout, and structured error metadata stay deterministic in CI.
 
 ## Documentation
 
