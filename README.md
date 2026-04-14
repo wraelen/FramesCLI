@@ -1,11 +1,7 @@
 # FramesCLI
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-dark-bg.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-color.png">
-    <img src="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-color.png" alt="FramesCLI" width="320">
-  </picture>
+  <img src="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-main.svg" alt="FramesCLI" width="400">
 </p>
 
 Make any video AI-readable: turn recordings into agent-ready artifacts with frame timelines, contact sheets, metadata, audio, and transcripts.
