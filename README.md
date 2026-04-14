@@ -2,9 +2,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-dark-bg.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-readme.svg">
-    <img src="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-readme.svg" alt="FramesCLI" width="320">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-dark-bg.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-color.png">
+    <img src="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-color.png" alt="FramesCLI" width="320">
   </picture>
 </p>
 
