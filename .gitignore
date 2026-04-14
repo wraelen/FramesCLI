@@ -8,3 +8,6 @@
 *.test
 .DS_Store
 .codex
+.mcpregistry_*
+claude-chats/
+*.mcpb

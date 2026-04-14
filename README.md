@@ -17,6 +17,8 @@ FramesCLI is a local-first Go CLI + TUI for making video content searchable, ana
 > [![License](https://img.shields.io/github/license/wraelen/framescli?style=flat-square)](./LICENSE)
 > [![Release](https://img.shields.io/github/v/release/wraelen/framescli?style=flat-square)](https://github.com/wraelen/framescli/releases)
 
+> **Now available in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.wraelen/framescli)!** Install FramesCLI in any MCP-compatible client (Claude Desktop, Cursor, Cline, Windsurf, etc.).
+
 ## Why Use It
 
 - Make long recordings scannable with extracted frames and contact sheets
@@ -151,7 +153,8 @@ Notes:
 
 - The release installer places `framescli` into `~/.local/bin` by default.
 - After binary install, the bootstrap flow can run `doctor` and launch `framescli setup`.
-- Package-manager distribution (`apt`, Homebrew, winget, etc.) is intentionally deferred for now; the maintained install path is checksum-verified GitHub release binaries.
+- FramesCLI is listed in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.wraelen/framescli) for discovery by MCP-compatible clients.
+- Package-manager distribution (`apt`, Homebrew, winget, etc.) is planned for future releases.
 - The local repo build helper remains available at `./scripts/install.sh`.
 
 ### Dependency Install
@@ -756,7 +759,7 @@ For MCP-only coverage, `go test ./cmd/frames -run 'TestMCPServer|TestMCPHelperPr
 ## Documentation
 
 - Product + usage docs: `README.md`
-- Ongoing build checklist: `docs/CHECKLIST.md`
+- Development roadmap: `docs/NEXT_PHASE_ROADMAP.md`
 - Agent workflow recipes: `docs/AGENT_RECIPES.md`
 - Repo-local agent skill: `SKILL.md`
 - Media capture guide for future product demos: `docs/media/README_MEDIA.md`
@@ -766,4 +769,4 @@ For MCP-only coverage, `go test ./cmd/frames -run 'TestMCPServer|TestMCPHelperPr
 
 ## Roadmap Snapshot
 
-See `docs/CHECKLIST.md` for the active must-have and post-launch items.
+See `docs/NEXT_PHASE_ROADMAP.md` for the active development roadmap and upcoming milestones.
