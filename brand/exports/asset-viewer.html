@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FramesCLI Brand Assets Viewer</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 40px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+        .asset-card {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .asset-card h3 {
+            margin: 0 0 15px 0;
+            font-size: 14px;
+            color: #666;
+            font-family: monospace;
+        }
+        .asset-preview {
+            min-height: 150px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: white;
+            border: 1px solid #eee;
+            border-radius: 4px;
+            padding: 20px;
+            margin-bottom: 10px;
+        }
+        .asset-preview.dark {
+            background: #1a1a1a;
+        }
+        .asset-preview img {
+            max-width: 100%;
+            max-height: 200px;
+            object-fit: contain;
+        }
+        .asset-info {
+            font-size: 12px;
+            color: #999;
+            margin-top: 8px;
+        }
+        .file-size {
+            display: inline-block;
+            background: #e3f2fd;
+            color: #1976d2;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            margin-right: 8px;
+        }
+        .dimensions {
+            color: #666;
+        }
+        .section-title {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 40px 0 20px 0;
+            color: #333;
+            border-bottom: 2px solid #ddd;
+            padding-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>FramesCLI Brand Assets</h1>
+
+    <div class="section-title">Main Logos</div>
+    <div class="grid">
+        <div class="asset-card">
+            <h3>logo-main.svg</h3>
+            <div class="asset-preview">
+                <img src="logo-main.svg" alt="Main Logo">
+            </div>
+            <div class="asset-info">Current README logo</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>logo-readme.svg</h3>
+            <div class="asset-preview">
+                <img src="logo-readme.svg" alt="README Logo">
+            </div>
+            <div class="asset-info">Previous README logo</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>logo-hero.svg</h3>
+            <div class="asset-preview">
+                <img src="logo-hero.svg" alt="Hero Logo">
+            </div>
+            <div class="asset-info">Hero version</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>logo-horizontal.svg</h3>
+            <div class="asset-preview">
+                <img src="logo-horizontal.svg" alt="Horizontal Logo">
+            </div>
+            <div class="asset-info">Horizontal layout</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>logo-horizontal.png</h3>
+            <div class="asset-preview">
+                <img src="logo-horizontal.png" alt="Horizontal Logo PNG">
+            </div>
+            <div class="asset-info">Horizontal PNG</div>
+        </div>
+    </div>
+
+    <div class="section-title">Colored Versions</div>
+    <div class="grid">
+        <div class="asset-card">
+            <h3>logo-color.svg</h3>
+            <div class="asset-preview">
+                <img src="logo-color.svg" alt="Color Logo SVG">
+            </div>
+            <div class="asset-info">Color version SVG</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>logo-color.png</h3>
+            <div class="asset-preview">
+                <img src="logo-color.png" alt="Color Logo PNG">
+            </div>
+            <div class="asset-info">Color version PNG</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>logo-dark-bg.svg</h3>
+            <div class="asset-preview dark">
+                <img src="logo-dark-bg.svg" alt="Dark Background Logo SVG">
+            </div>
+            <div class="asset-info">Dark background SVG (wrapper)</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>logo-dark-bg.png</h3>
+            <div class="asset-preview dark">
+                <img src="logo-dark-bg.png" alt="Dark Background Logo PNG">
+            </div>
+            <div class="asset-info">Dark background PNG</div>
+        </div>
+    </div>
+
+    <div class="section-title">Monochrome & Icons</div>
+    <div class="grid">
+        <div class="asset-card">
+            <h3>logo-mono.svg</h3>
+            <div class="asset-preview">
+                <img src="logo-mono.svg" alt="Mono Logo SVG">
+            </div>
+            <div class="asset-info">Monochrome SVG</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>logo-mono.png</h3>
+            <div class="asset-preview">
+                <img src="logo-mono.png" alt="Mono Logo PNG">
+            </div>
+            <div class="asset-info">Monochrome PNG</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>logo-icon.svg</h3>
+            <div class="asset-preview">
+                <img src="logo-icon.svg" alt="Icon SVG">
+            </div>
+            <div class="asset-info">Icon only SVG</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>logo-icon.png</h3>
+            <div class="asset-preview">
+                <img src="logo-icon.png" alt="Icon PNG">
+            </div>
+            <div class="asset-info">Icon only PNG</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>logo-icon-color.svg</h3>
+            <div class="asset-preview">
+                <img src="logo-icon-color.svg" alt="Icon Color SVG">
+            </div>
+            <div class="asset-info">Icon color SVG</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>logo-icon-color.png</h3>
+            <div class="asset-preview">
+                <img src="logo-icon-color.png" alt="Icon Color PNG">
+            </div>
+            <div class="asset-info">Icon color PNG</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>logo-icon-source.png</h3>
+            <div class="asset-preview">
+                <img src="logo-icon-source.png" alt="Icon Source">
+            </div>
+            <div class="asset-info">Icon source file</div>
+        </div>
+    </div>
+
+    <div class="section-title">Favicons & MCP</div>
+    <div class="grid">
+        <div class="asset-card">
+            <h3>favicon-16.png</h3>
+            <div class="asset-preview">
+                <img src="favicon-16.png" alt="Favicon 16" style="image-rendering: pixelated;">
+            </div>
+            <div class="asset-info"><span class="file-size">16x16</span> Browser favicon</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>favicon-32.png</h3>
+            <div class="asset-preview">
+                <img src="favicon-32.png" alt="Favicon 32" style="image-rendering: pixelated;">
+            </div>
+            <div class="asset-info"><span class="file-size">32x32</span> Browser favicon</div>
+        </div>
+
+        <div class="asset-card">
+            <h3>mcp-icon-1024.png</h3>
+            <div class="asset-preview">
+                <img src="mcp-icon-1024.png" alt="MCP Icon">
+            </div>
+            <div class="asset-info"><span class="file-size">1024x1024</span> MCP Registry icon</div>
+        </div>
+    </div>
+
+    <div style="margin-top: 60px; padding: 20px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px;">
+        <h3 style="margin-top: 0; color: #856404;">Assets Audit Recommendations</h3>
+        <ul style="color: #856404; line-height: 1.8;">
+            <li><strong>Keep:</strong> logo-main.svg (current README), logo-icon*.*, favicons, mcp-icon-1024.png</li>
+            <li><strong>Consider removing:</strong> logo-dark-bg.svg (wrapper file), logo-readme.svg (replaced), duplicate PNGs if not used</li>
+            <li><strong>Potentially consolidate:</strong> Multiple horizontal/color variants - keep only what's actively used</li>
+            <li><strong>Document usage:</strong> Create a BRAND.md file documenting which asset is used where</li>
+        </ul>
+    </div>
+</body>
+</html>
