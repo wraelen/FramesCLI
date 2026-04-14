@@ -17,6 +17,17 @@ FramesCLI extracts timestamped frames and transcripts from any video, enabling a
 
 ---
 
+## 30-Second Agent Cheat Sheet
+
+**Installation check:** `framescli doctor --json`
+**MCP workflow:** `doctor` → `prefs_set` → `preview` → `extract` → `get_latest_artifacts`
+**CLI workflow:** `framescli extract video.mp4 --voice --json`
+**Preset guide:** `laptop-safe` (<30min) | `balanced` (default) | `high-fidelity` (short+GPU)
+**Cost estimation:** Always call `preview` first for large videos
+**Path safety:** Must call `prefs_set` before MCP `extract`
+
+---
+
 ## Quick Start for Agents
 
 ### 1. Verify Installation

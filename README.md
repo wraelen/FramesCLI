@@ -2,9 +2,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="brand/exports/logo-dark-bg.svg">
-    <source media="(prefers-color-scheme: light)" srcset="brand/exports/logo-readme.svg">
-    <img src="brand/exports/logo-readme.svg" alt="FramesCLI" width="320">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-dark-bg.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-readme.svg">
+    <img src="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-readme.svg" alt="FramesCLI" width="320">
   </picture>
 </p>
 
@@ -16,8 +16,17 @@ FramesCLI is a local-first Go CLI + TUI for making video content searchable, ana
 > [![Build](https://img.shields.io/github/actions/workflow/status/wraelen/framescli/ci.yml?branch=main&style=flat-square)](https://github.com/wraelen/framescli/actions)
 > [![License](https://img.shields.io/github/license/wraelen/framescli?style=flat-square)](./LICENSE)
 > [![Release](https://img.shields.io/github/v/release/wraelen/framescli?style=flat-square)](https://github.com/wraelen/framescli/releases)
+> [![MCP Registry](https://img.shields.io/badge/MCP-Registry-blue?style=flat-square)](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.wraelen/framescli)
 
 > **Now available in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.wraelen/framescli)!** Install FramesCLI in any MCP-compatible client (Claude Desktop, Cursor, Cline, Windsurf, etc.).
+
+## Quick Wins
+
+- **Tutorial creators**: Turn videos into auto-generated step-by-step guides
+- **Meeting facilitators**: Get searchable transcripts with precise timestamps
+- **Developers**: Analyze debug recordings with visual + spoken context
+- **Content teams**: Build searchable video knowledge bases
+- **Researchers**: Extract structured data from video sources
 
 ## Why Use It
 
@@ -153,8 +162,8 @@ Notes:
 
 - The release installer places `framescli` into `~/.local/bin` by default.
 - After binary install, the bootstrap flow can run `doctor` and launch `framescli setup`.
-- FramesCLI is listed in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.wraelen/framescli) for discovery by MCP-compatible clients.
-- Package-manager distribution (`apt`, Homebrew, winget, etc.) is planned for future releases.
+- **Try via MCP Registry**: FramesCLI is listed in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.wraelen/framescli). Search for "framescli" in any MCP-compatible client (Claude Desktop, Cursor, Cline, Windsurf) for one-click installation.
+- Package-manager distribution (`apt`, Homebrew, winget, etc.) is planned for future releases (see [roadmap](docs/NEXT_PHASE_ROADMAP.md)).
 - The local repo build helper remains available at `./scripts/install.sh`.
 
 ### Dependency Install

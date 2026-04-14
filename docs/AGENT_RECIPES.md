@@ -1,5 +1,12 @@
 # FramesCLI Agent Recipes
 
+## Table of Contents
+
+1. [OpenClaw MCP Recipe](#openclaw-mcp-recipe)
+2. [CLI JSON Fast Path](#cli-json-fast-path)
+3. [Batch Debug Archive](#batch-debug-archive)
+4. [Pipeline Notes](#pipeline-notes)
+
 This page provides copy-paste workflows for coding agents, MCP clients, and OpenClaw.
 
 ## OpenClaw MCP Recipe
