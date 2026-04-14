@@ -1,12 +1,12 @@
 # FramesCLI
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-main.svg" alt="FramesCLI" width="600">
+  <img src="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-main.svg" alt="FramesCLI" width="600" style="margin: 20px 0;">
 </p>
 
-Make any video AI-readable: turn recordings into agent-ready artifacts with frame timelines, contact sheets, metadata, audio, and transcripts.
+**FramesCLI lets AI agents "watch" videos.** Extract frames and transcripts from any video so Claude, ChatGPT, or other AI assistants can analyze the visual and audio content.
 
-FramesCLI is a local-first Go CLI + TUI for making video content searchable, analyzable, and usable by AI agents.
+Tell your AI: *"Use framescli to watch this video and tell me what happens"* — and it actually can.
 
 > [![Go Version](https://img.shields.io/github/go-mod/go-version/wraelen/framescli?style=flat-square)](https://github.com/wraelen/framescli/blob/main/go.mod)
 > [![Build](https://img.shields.io/github/actions/workflow/status/wraelen/framescli/ci.yml?branch=main&style=flat-square)](https://github.com/wraelen/framescli/actions)
@@ -16,20 +16,25 @@ FramesCLI is a local-first Go CLI + TUI for making video content searchable, ana
 
 > **Now available in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.wraelen/framescli)!** Install FramesCLI in any MCP-compatible client (Claude Desktop, Cursor, Cline, Windsurf, etc.).
 
-## Quick Wins
+## What Your AI Can Do
 
-- **Tutorial creators**: Turn videos into auto-generated step-by-step guides
-- **Meeting facilitators**: Get searchable transcripts with precise timestamps
-- **Developers**: Analyze debug recordings with visual + spoken context
-- **Content teams**: Build searchable video knowledge bases
-- **Researchers**: Extract structured data from video sources
+Once FramesCLI extracts frames and transcripts, your AI agent can:
 
-## Why Use It
+- **Analyze screen recordings**: "What error appeared at 2:30?" → Agent sees the frames and reads the transcript
+- **Understand tutorials**: "Summarize the steps in this demo" → Agent follows the visual timeline
+- **Review meetings**: "What decisions were made?" → Agent reads transcript + sees presentation slides in frames
+- **Debug issues**: "When did the app crash?" → Agent correlates visual state with spoken context
+- **Extract insights**: "What was covered in this lecture?" → Agent processes both visual and audio content
 
-- Make long recordings scannable with extracted frames and contact sheets
-- Generate transcripts for quick semantic search and AI context
-- Produce structured JSON outputs for automation and agent pipelines
-- Run locally with file-system based workflows (no required cloud backend)
+## How It Works
+
+1. **You provide a video** (screen recording, meeting, tutorial, anything)
+2. **FramesCLI extracts:**
+   - Visual timeline: frames at configurable intervals (1fps, 4fps, 8fps)
+   - Audio content: full transcript with word-level timestamps
+   - Structured metadata: JSON with frame paths, timings, and transcript segments
+3. **Your AI agent reads the artifacts** and can "watch" the video through the extracted frames + transcript
+4. **Local-first**: All processing happens on your machine using ffmpeg and whisper (no cloud required)
 
 ## For AI Coding Assistants
 
@@ -80,14 +85,14 @@ FramesCLI is a local-first Go CLI + TUI for making video content searchable, ana
 
 ### Common Use Cases for Agents
 
-| Use Case | Workflow |
-|----------|----------|
-| **Tutorial analysis** | Extract frames + transcript → create step-by-step guides |
-| **Meeting documentation** | Process recording → generate summary with timestamps |
-| **Debug session review** | Extract frames + transcript → analyze error patterns |
-| **Video knowledge extraction** | Transcribe content → make searchable and referenceable |
-| **Screen recording analysis** | Extract frames → visual timeline for any workflow |
-| **Batch processing** | Extract multiple videos → index for semantic search |
+| Use Case | User Request | Agent Action |
+|----------|--------------|--------------|
+| **Tutorial analysis** | "Summarize this coding tutorial" | Extract frames + transcript → analyze visual steps + spoken explanations |
+| **Meeting review** | "What was decided in this meeting?" | Extract frames + transcript → identify key decisions from slides + discussion |
+| **Debug session** | "When did the error occur?" | Extract frames + transcript → find error timestamp in visual + audio |
+| **Content understanding** | "What's covered in this lecture?" | Extract frames + transcript → process visual slides + spoken content |
+| **Screen recording analysis** | "Walk me through what happened" | Extract frames → provide visual timeline with transcript context |
+| **Batch analysis** | "Analyze all my recordings" | Extract multiple videos → index and search across visual + audio content |
 
 **Installation:** See [Install](#install) section below for ffmpeg/whisper dependencies.
 
@@ -251,21 +256,20 @@ make release-verify
 
 This verifies published checksums, expected archive contents, installer asset resolution, and a runtime smoke check for the current platform binary.
 
-## 60-Second Quickstart
+## 60-Second Quickstart: Let Your AI Watch a Video
 
 ```bash
-# 1) Validate local toolchain
+# 1) Install and verify
 framescli doctor
 
-# 2) Preview a recording (no extraction yet)
-framescli preview /path/to/recording.mp4 --mode both --json
+# 2) Extract frames + transcript from a video
+framescli extract /path/to/recording.mp4 --voice --preset balanced
 
-# 3) Extract frames + transcript
-framescli extract /path/to/recording.mp4 --voice --json
-
-# 4) Inspect indexed artifacts for the latest run
-framescli artifacts latest
+# 3) Now ask your AI: "Read the extracted frames and transcript, then tell me what happens in this video"
+# Your AI can now see the visual timeline (frames) and hear the audio (transcript)
 ```
+
+**With MCP integration:** Just tell Claude *"Use framescli to watch video.mp4 and summarize it"* — framescli handles the extraction automatically.
 
 ## Command Overview
 
