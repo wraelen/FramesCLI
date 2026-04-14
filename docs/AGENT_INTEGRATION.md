@@ -1,15 +1,16 @@
 # FramesCLI Agent Integration Guide
 
-**For AI Coding Assistants**: This guide helps AI agents integrate with FramesCLI to turn screen recordings into analyzable artifacts.
+**For AI Coding Assistants**: This guide helps AI agents integrate with FramesCLI to make any video AI-readable through structured, searchable artifacts.
 
 ## What FramesCLI Does for Agents
 
-FramesCLI extracts timestamped frames and transcripts from screen recordings, enabling agents to:
+FramesCLI extracts timestamped frames and transcripts from any video, enabling agents to:
 
-- Analyze debugging sessions by reading frame metadata and transcripts
-- Review incident recordings with searchable artifacts
-- Process coding session recordings for documentation
-- Generate summaries from long-form video content
+- Turn tutorials and demos into step-by-step documentation
+- Extract knowledge from meeting recordings and presentations
+- Analyze screen recordings for debugging and troubleshooting
+- Process educational content into searchable, referenceable formats
+- Generate summaries and timelines from any video content
 
 **Primary Interface:** MCP (Model Context Protocol) stdio server
 **Fallback Interface:** CLI with `--json` output

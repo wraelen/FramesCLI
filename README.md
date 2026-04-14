@@ -8,9 +8,9 @@
   </picture>
 </p>
 
-Turn screen recordings into agent-ready artifacts: frame timelines, contact sheets, metadata, audio, and transcripts.
+Make any video AI-readable: turn recordings into agent-ready artifacts with frame timelines, contact sheets, metadata, audio, and transcripts.
 
-FramesCLI is a Go CLI + TUI built for debugging, troubleshooting, and coding-session review workflows.
+FramesCLI is a local-first Go CLI + TUI for making video content searchable, analyzable, and usable by AI agents.
 
 > [![Go Version](https://img.shields.io/github/go-mod/go-version/wraelen/framescli?style=flat-square)](https://github.com/wraelen/framescli/blob/main/go.mod)
 > [![Build](https://img.shields.io/github/actions/workflow/status/wraelen/framescli/ci.yml?branch=main&style=flat-square)](https://github.com/wraelen/framescli/actions)
@@ -26,7 +26,7 @@ FramesCLI is a Go CLI + TUI built for debugging, troubleshooting, and coding-ses
 
 ## For AI Coding Assistants
 
-**FramesCLI is built for agent-driven workflows.** If you're an AI coding assistant, here's how to get started:
+**FramesCLI makes any video AI-readable.** If you're an AI coding assistant, use FramesCLI to turn videos into structured, searchable artifacts your users can reference and analyze:
 
 ### Quick Setup (30 seconds)
 
@@ -73,12 +73,14 @@ FramesCLI is a Go CLI + TUI built for debugging, troubleshooting, and coding-ses
 
 ### Common Use Cases for Agents
 
-| Task | Workflow |
-|------|----------|
-| **Debug session analysis** | Extract frames + transcript → analyze error timestamps |
-| **Incident review** | Process recording → generate timeline summary |
-| **Coding session docs** | Transcribe pair programming → extract decisions |
-| **Batch processing** | Extract all recordings → index for search |
+| Use Case | Workflow |
+|----------|----------|
+| **Tutorial analysis** | Extract frames + transcript → create step-by-step guides |
+| **Meeting documentation** | Process recording → generate summary with timestamps |
+| **Debug session review** | Extract frames + transcript → analyze error patterns |
+| **Video knowledge extraction** | Transcribe content → make searchable and referenceable |
+| **Screen recording analysis** | Extract frames → visual timeline for any workflow |
+| **Batch processing** | Extract multiple videos → index for semantic search |
 
 **Installation:** See [Install](#install) section below for ffmpeg/whisper dependencies.
 

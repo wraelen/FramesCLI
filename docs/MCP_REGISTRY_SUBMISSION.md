@@ -33,18 +33,24 @@ python3 -c "from PIL import Image; img = Image.open('brand/exports/mcp-icon-1024
 
 ## Short Description
 
-**Primary (recommended):**
-> Turn screen recordings into timestamped frames, transcripts, and searchable artifacts for debugging and incident analysis.
+**Primary (recommended - broader appeal):**
+> Make videos AI-readable. Turn any video into timestamped frames and transcripts that agents can analyze, search, and reference.
 
-**Alternative:**
-> Local-first video processing for AI agents: extract frames, generate transcripts, and produce structured JSON outputs from screen recordings.
+**Alternative (emphasizes common use cases):**
+> Turn screen recordings into timestamped frames and transcripts for debugging, documentation, tutorials, or any video content your agents need to understand.
+
+**Alternative (technical):**
+> Local-first video processing for AI agents: extract frames, generate transcripts, and produce structured JSON outputs from any video file.
 
 ## Categories
 
 Select these categories for the MCP registry:
 
-- ✅ **Development Tools** - Primary category (video analysis for debugging/coding sessions)
-- ✅ **Media & Content** - Secondary category (video/audio processing)
+- ✅ **Media & Content** - Primary category (universal video/audio processing for agents)
+- ✅ **Productivity** - Secondary category (agent workflow enhancement, documentation, knowledge extraction)
+- ✅ **Development Tools** - Tertiary category (includes debugging, incident review use cases)
+
+**Note:** Prioritize Media & Content as primary since FramesCLI handles ANY video content, not just development/debugging videos.
 
 ## MCP Server Configuration
 
@@ -145,13 +151,14 @@ Use this template when submitting to the MCP registry:
 
 ```yaml
 name: framescli
-description: Turn screen recordings into timestamped frames, transcripts, and searchable artifacts for debugging and incident analysis
+description: Make videos AI-readable. Turn any video into timestamped frames and transcripts that agents can analyze, search, and reference.
 homepage: https://github.com/wraelen/framescli
 repository: https://github.com/wraelen/framescli
 license: MIT
 categories:
-  - development-tools
   - media-content
+  - productivity
+  - development-tools
 logo: brand/exports/logo-icon-color.png
 installation:
   command: framescli
@@ -177,18 +184,23 @@ tools:
 
 ## Submission Process
 
-1. **Fork the MCP servers registry:**
+**IMPORTANT:** Submit to the **registry** repo (NOT the servers repo)
+
+1. **Fork the MCP registry:**
    ```bash
-   gh repo fork modelcontextprotocol/servers
+   gh repo fork modelcontextprotocol/registry
    ```
+
+   **Correct repo:** https://github.com/modelcontextprotocol/registry
+   **NOT:** ~~https://github.com/modelcontextprotocol/servers~~ (they no longer accept server PRs)
 
 2. **Add FramesCLI entry** to the appropriate category file
 
 3. **Include logo** (may need to be committed to the registry repo or linked from this repo)
 
 4. **Create PR** with:
-   - Clear title: "Add FramesCLI - Video processing for AI agents"
-   - Description highlighting use cases (debugging, incident review)
+   - Clear title: "Add FramesCLI - Make videos AI-readable"
+   - Description highlighting use cases (tutorials, documentation, debugging, knowledge extraction, any video content)
    - Link to documentation
 
 5. **Respond to review feedback** and iterate
