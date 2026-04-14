@@ -87,6 +87,30 @@ Exit criteria:
 - install paths are simpler for non-Go users
 - release confidence is high enough that shipping does not require manual heroics
 
+## `v0.5.0` VSCode Extension And Enhanced UX
+
+Primary outcome: provide one-click installation and visual UI for VSCode/Cursor users.
+
+Scope:
+
+- create VSCode extension that bundles FramesCLI MCP server
+- add visual UI for configuring extraction settings (fps, format, presets)
+- add quick actions: "Extract frames from this video" in file explorer context menu
+- add inline frame preview panel for extracted runs
+- add video file detection and suggested workflows
+- integrate with VSCode's output panel for progress tracking
+- publish to VSCode marketplace and Cursor extension store
+
+Exit criteria:
+
+- VSCode/Cursor users can install FramesCLI with one click from marketplace
+- Common extraction workflows are accessible via UI without CLI knowledge
+- Extension handles FramesCLI binary installation/updates automatically
+
+**Note:** This complements (not replaces) the MCP registry listing. Users can choose between:
+- MCP registry + manual config (works with ALL MCP clients)
+- VSCode extension (one-click install, better UX, VSCode/Cursor only)
+
 ## Cross-Cutting Workstreams
 
 These are parallel tracks that can run alongside milestone work.
