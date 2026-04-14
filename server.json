@@ -12,7 +12,7 @@
     {
       "registryType": "mcpb",
       "identifier": "https://github.com/wraelen/framescli/releases/download/v0.1.0/framescli.mcpb",
-      "fileSha256": "REPLACE_WITH_ACTUAL_SHA256",
+      "fileSha256": "242facc86e68eb429c3031d01e3dc221c4e9f55ede8bfb7f1bf1185d63321d70",
       "transport": {
         "type": "stdio"
       }
