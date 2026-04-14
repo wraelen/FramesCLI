@@ -184,26 +184,66 @@ tools:
 
 ## Submission Process
 
-**IMPORTANT:** Submit to the **registry** repo (NOT the servers repo)
+**IMPORTANT:** The MCP registry now uses a CLI tool for publishing (NOT pull requests)
 
-1. **Fork the MCP registry:**
+### Prerequisites
+
+1. **Install mcp-publisher CLI:**
    ```bash
-   gh repo fork modelcontextprotocol/registry
+   # macOS/Linux
+   curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher && sudo mv mcp-publisher /usr/local/bin/
+
+   # Or via Homebrew
+   brew install mcp-publisher
    ```
 
-   **Correct repo:** https://github.com/modelcontextprotocol/registry
-   **NOT:** ~~https://github.com/modelcontextprotocol/servers~~ (they no longer accept server PRs)
+2. **Verify installation:**
+   ```bash
+   mcp-publisher --help
+   ```
 
-2. **Add FramesCLI entry** to the appropriate category file
+### Steps to Publish
 
-3. **Include logo** (may need to be committed to the registry repo or linked from this repo)
+1. **Create .mcpb package from your binary:**
+   ```bash
+   # Copy binary with .mcpb extension
+   cp bin/framescli framescli-v0.1.0.mcpb
 
-4. **Create PR** with:
-   - Clear title: "Add FramesCLI - Make videos AI-readable"
-   - Description highlighting use cases (tutorials, documentation, debugging, knowledge extraction, any video content)
-   - Link to documentation
+   # Calculate SHA256 hash
+   openssl dgst -sha256 framescli-v0.1.0.mcpb
+   # Output: SHA256(framescli-v0.1.0.mcpb)= abc123...
+   ```
 
-5. **Respond to review feedback** and iterate
+2. **Upload .mcpb to GitHub release:**
+   - Go to: https://github.com/wraelen/framescli/releases/tag/v0.1.0
+   - Edit release
+   - Upload `framescli-v0.1.0.mcpb` as an additional asset
+   - Save
+
+3. **Update server.json with SHA256:**
+   - Open `server.json` in repo root
+   - Replace `REPLACE_WITH_ACTUAL_SHA256` with the hash from step 1
+   - Update version if needed
+   - Commit and push
+
+4. **Authenticate with MCP registry:**
+   ```bash
+   mcp-publisher login github
+   ```
+   - Follow the prompts
+   - Visit https://github.com/login/device
+   - Enter the code shown in terminal
+   - Authorize the application
+
+5. **Publish to registry:**
+   ```bash
+   mcp-publisher publish
+   ```
+
+6. **Verify publication:**
+   ```bash
+   curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.wraelen/framescli"
+   ```
 
 ## Maintainer Notes
 

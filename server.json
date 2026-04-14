@@ -1,0 +1,27 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.wraelen/framescli",
+  "title": "FramesCLI",
+  "description": "Make videos AI-readable. Turn any video into timestamped frames and transcripts that agents can analyze, search, and reference.",
+  "repository": {
+    "url": "https://github.com/wraelen/framescli",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/wraelen/framescli/releases/download/v0.1.0/framescli.mcpb",
+      "fileSha256": "REPLACE_WITH_ACTUAL_SHA256",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ],
+  "categories": [
+    "media-content",
+    "productivity",
+    "development-tools"
+  ],
+  "license": "MIT"
+}
