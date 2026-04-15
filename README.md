@@ -4,9 +4,7 @@
   <img src="https://raw.githubusercontent.com/wraelen/framescli/main/brand/exports/logo-main.svg" alt="FramesCLI" width="600" style="margin: 20px 0;">
 </p>
 
-**FramesCLI lets AI agents "watch" videos.** Extract frames and transcripts from any video so Claude, ChatGPT, or other AI assistants can analyze the visual and audio content.
-
-Tell your AI: *"Use framescli to watch this video and tell me what happens"* — and it actually can.
+**FramesCLI lets AI agents "watch" videos.** Extract frames and transcripts from any video so Claude, Codex, or other AI coding assistants can analyze the visual and audio content.
 
 > [![Go Version](https://img.shields.io/github/go-mod/go-version/wraelen/framescli?style=flat-square)](https://github.com/wraelen/framescli/blob/main/go.mod)
 > [![Build](https://img.shields.io/github/actions/workflow/status/wraelen/framescli/ci.yml?branch=main&style=flat-square)](https://github.com/wraelen/framescli/actions)
@@ -271,10 +269,80 @@ framescli extract /path/to/recording.mp4 --voice --preset balanced
 
 **With MCP integration:** Just tell Claude *"Use framescli to watch video.mp4 and summarize it"* — framescli handles the extraction automatically.
 
+## URL Extraction
+
+FramesCLI can download and extract frames/transcripts from any video URL supported by `yt-dlp` (1000+ sites including YouTube, Vimeo, Twitter, Reddit, and more).
+
+### Requirements
+
+Install `yt-dlp` for URL support:
+
+```bash
+# Direct binary install (recommended)
+curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp
+chmod +x ~/.local/bin/yt-dlp
+
+# Or via pip/pipx
+pip install yt-dlp
+# or
+pipx install yt-dlp
+```
+
+Verify with `framescli doctor` — it will show `[ok] yt-dlp` if found.
+
+### Extract from URLs
+
+```bash
+# YouTube video
+framescli extract --url "https://youtube.com/watch?v=..." --preset balanced --voice
+
+# Direct video link
+framescli extract --url "https://example.com/video.mp4" --fps 4
+
+# Any yt-dlp supported site
+framescli extract --url "https://vimeo.com/..." --voice --format png
+```
+
+### How It Works
+
+1. **URL provided via `--url` flag** (mutually exclusive with video path argument)
+2. **FramesCLI downloads video** using yt-dlp to `~/.cache/framescli/videos/<hash>.mp4`
+3. **Cache enabled by default** — re-running the same URL skips download
+4. **Extraction proceeds normally** with the cached local file
+5. **Use `--no-cache`** to force re-download
+
+### Cache Management
+
+Videos are cached at `~/.cache/framescli/videos/` using SHA256 hash of the URL:
+
+```bash
+# Re-download even if cached
+framescli extract --url "..." --no-cache
+
+# Manual cache cleanup (planned for v0.2.1)
+# For now: rm -rf ~/.cache/framescli/videos/
+```
+
+### Error Handling
+
+FramesCLI provides clear error messages for common failures:
+
+- **Geo-blocked:** "Video not available in your region (use VPN or proxy)"
+- **Deleted/private:** "Video unavailable (deleted or private)"
+- **Auth required:** "Video requires authentication (use yt-dlp cookies)"
+- **Network error:** "Download failed (check connection, retry with --no-cache)"
+
+### Notes
+
+- URL and path arguments are mutually exclusive
+- Downloaded videos use the same extraction pipeline as local files
+- Cache hits skip the download phase entirely
+- Source attribution is tracked in run metadata
+
 ## Command Overview
 
 ```bash
-framescli extract <videoPath|recent> [fps] [--preset balanced] [--voice] [--format png|jpg] [--quality 1-31]
+framescli extract [<videoPath|recent>] [fps] [--url <url>] [--preset balanced] [--voice] [--format png|jpg] [--quality 1-31] [--no-cache]
 framescli extract-batch <videoPathOrGlob...> [--preset balanced] [--fps auto] [--voice] [--from 00:30 --to 01:45]
 framescli preview <videoPath|recent> [--preset balanced] [--fps auto --format png --mode both]
 framescli artifacts [run|latest] [--recent 5] [--json]

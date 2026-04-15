@@ -208,6 +208,8 @@ func main() {
 }
 
 type extractWorkflowOptions struct {
+	URL                string
+	NoCache            bool
 	OutDir             string
 	Voice              bool
 	FrameFormat        string
@@ -651,8 +653,50 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		return result, fmt.Errorf("invalid sheet-cols value. use a positive number")
 	}
 
+	// Handle URL download if --url was provided
+	downloadNote := ""
+	if opts.URL != "" {
+		if interactive {
+			fmt.Println("[1/5] Downloading video from URL")
+		}
+		// Use default cache dir: ~/.cache/framescli/videos
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return result, fmt.Errorf("failed to get home directory: %w", err)
+		}
+		cacheDir := filepath.Join(homeDir, ".cache", "framescli", "videos")
+		downloadOpts := media.DownloadOptions{
+			CacheDir: cacheDir,
+			UseCache: !opts.NoCache,
+			Context:  ctx,
+		}
+		if interactive {
+			downloadOpts.ProgressWriter = os.Stdout
+		}
+		downloadResult, err := media.DownloadVideo(opts.URL, downloadOpts)
+		if err != nil {
+			return result, fmt.Errorf("failed to download video: %w", err)
+		}
+		videoInput = downloadResult.LocalPath
+		if downloadResult.WasCached {
+			downloadNote = fmt.Sprintf("cached from %s", opts.URL)
+			if interactive {
+				fmt.Printf("  using cached video\n")
+			}
+		} else {
+			downloadNote = fmt.Sprintf("downloaded from %s", opts.URL)
+			if interactive {
+				fmt.Printf("  downloaded: %s\n", downloadResult.Metadata.Title)
+			}
+		}
+	}
+
 	if interactive {
-		fmt.Println("[1/4] Resolving video input")
+		if opts.URL != "" {
+			fmt.Println("[2/5] Resolving video input")
+		} else {
+			fmt.Println("[1/4] Resolving video input")
+		}
 	}
 	resolvedPath, note, err := resolveVideoInput(videoInput)
 	if err != nil {
@@ -660,9 +704,18 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 	}
 	videoPath := resolvedPath
 	result.ResolvedVideo = videoPath
-	result.SourceNote = note
-	if interactive && note != "" {
-		fmt.Printf("  source: %s\n", note)
+	// Combine download note with resolution note
+	if downloadNote != "" {
+		if note != "" {
+			result.SourceNote = downloadNote + " (" + note + ")"
+		} else {
+			result.SourceNote = downloadNote
+		}
+	} else {
+		result.SourceNote = note
+	}
+	if interactive && result.SourceNote != "" {
+		fmt.Printf("  source: %s\n", result.SourceNote)
 	}
 	videoInfo, err := media.ProbeVideoInfo(videoPath)
 	if err != nil {
@@ -712,7 +765,11 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 	}
 
 	if interactive {
-		fmt.Println("[2/4] Extracting media")
+		if opts.URL != "" {
+			fmt.Println("[3/5] Extracting media")
+		} else {
+			fmt.Println("[2/4] Extracting media")
+		}
 	}
 	var progressFn func(float64)
 	progressTracker := newStageProgressTracker(started)
@@ -775,7 +832,11 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 	sheet := ""
 	if opts.NoSheet {
 		if interactive {
-			fmt.Println("[3/4] Skipping contact sheet (--no-sheet)")
+			if opts.URL != "" {
+				fmt.Println("[4/5] Skipping contact sheet (--no-sheet)")
+			} else {
+				fmt.Println("[3/4] Skipping contact sheet (--no-sheet)")
+			}
 		}
 		if interactive && !opts.Verbose {
 			progressTracker.render("contact sheet skipped", 85)
@@ -783,7 +844,11 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		}
 	} else {
 		if interactive {
-			fmt.Println("[3/4] Building contact sheet")
+			if opts.URL != "" {
+				fmt.Println("[4/5] Building contact sheet")
+			} else {
+				fmt.Println("[3/4] Building contact sheet")
+			}
 		}
 		sheetsDir := filepath.Join(extractResult.ImagesDir, "sheets")
 		if interactive && opts.Verbose {
@@ -820,7 +885,11 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 	transcriptionTimedOut := false
 	if opts.Voice {
 		if interactive {
-			fmt.Println("[4/4] Transcribing voice")
+			if opts.URL != "" {
+				fmt.Println("[5/5] Transcribing voice")
+			} else {
+				fmt.Println("[4/4] Transcribing voice")
+			}
 		}
 		voiceDir := filepath.Join(extractResult.OutDir, "voice")
 		if extractResult.AudioPath == "" {
@@ -1409,13 +1478,35 @@ func previewModeUsesTranscript(mode string) bool {
 
 func extractCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "extract <videoPath|recent> [fps]",
+		Use:   "extract [<videoPath|recent>] [fps]",
 		Short: "Extract video frames (png/jpg), optional voice transcription",
-		Args:  cobra.RangeArgs(1, 2),
+		Args:  cobra.RangeArgs(0, 2),
 		Run: func(cmd *cobra.Command, args []string) {
+			// Handle URL vs path validation
+			urlFlag, _ := cmd.Flags().GetString("url")
+			hasURL := cmd.Flags().Changed("url")
+			hasPath := len(args) > 0
+
+			if hasURL && hasPath {
+				failln("Cannot specify both --url and video path argument")
+				return
+			}
+			if !hasURL && !hasPath {
+				failln("Must specify either --url or video path argument")
+				return
+			}
+
+			videoInput := ""
+			if hasURL {
+				videoInput = urlFlag
+			} else {
+				videoInput = args[0]
+			}
+
 			fpsSpec, _ := cmd.Flags().GetString("fps")
 			fpsExplicit := cmd.Flags().Changed("fps")
-			if len(args) >= 2 {
+			// FPS can be second arg only if first arg is video path (not when using --url)
+			if !hasURL && len(args) >= 2 {
 				fpsSpec = args[1]
 				fpsExplicit = true
 			}
@@ -1463,6 +1554,7 @@ func extractCommand() *cobra.Command {
 			postHook, _ := cmd.Flags().GetString("post-hook")
 			postHookTimeout, _ := cmd.Flags().GetDuration("post-hook-timeout")
 			jsonOut, _ := cmd.Flags().GetBool("json")
+			noCache, _ := cmd.Flags().GetBool("no-cache")
 			if !cmd.Flags().Changed("hwaccel") {
 				hwaccel = appCfg.HWAccel
 			}
@@ -1470,6 +1562,8 @@ func extractCommand() *cobra.Command {
 				preset = appCfg.PerformanceMode
 			}
 			opts := extractWorkflowOptions{
+				URL:                urlFlag,
+				NoCache:            noCache,
 				OutDir:             outDir,
 				Voice:              voice,
 				FrameFormat:        frameFormat,
@@ -1509,16 +1603,16 @@ func extractCommand() *cobra.Command {
 			}
 			if jsonOut {
 				started := time.Now()
-				res, err := runExtractWorkflowResult(cmd.Context(), args[0], fps, opts, false)
+				res, err := runExtractWorkflowResult(cmd.Context(), videoInput, fps, opts, false)
 				if err != nil {
 					if !isCancellationError(err) {
-						err = withDiagnostics("extract", args[0], opts.OutDir, opts.LogFile, err)
+						err = withDiagnostics("extract", videoInput, opts.OutDir, opts.LogFile, err)
 					}
 					_ = appendTelemetryEvent(telemetryEvent{
 						Command:     "extract",
 						Status:      "error",
 						DurationMs:  time.Since(started).Milliseconds(),
-						Input:       args[0],
+						Input:       videoInput,
 						FPS:         fps,
 						FrameFormat: opts.FrameFormat,
 						HWAccel:     opts.HWAccel,
@@ -1526,7 +1620,7 @@ func extractCommand() *cobra.Command {
 						Voice:       opts.Voice,
 						Error:       err.Error(),
 					})
-					emitAutomationJSON("extract", started, "error", map[string]string{"input": args[0]}, err)
+					emitAutomationJSON("extract", started, "error", map[string]string{"input": videoInput}, err)
 					if isCancellationError(err) {
 						markCommandInterrupted()
 					} else {
@@ -1538,7 +1632,7 @@ func extractCommand() *cobra.Command {
 					Command:       "extract",
 					Status:        "success",
 					DurationMs:    res.ElapsedMs,
-					Input:         args[0],
+					Input:         videoInput,
 					ResolvedInput: res.ResolvedVideo,
 					OutDir:        res.OutDir,
 					FPS:           res.FPS,
@@ -1553,16 +1647,16 @@ func extractCommand() *cobra.Command {
 				return
 			}
 			started := time.Now()
-			res, err := runExtractWorkflowResult(cmd.Context(), args[0], fps, opts, true)
+			res, err := runExtractWorkflowResult(cmd.Context(), videoInput, fps, opts, true)
 			if err != nil {
 				if !isCancellationError(err) {
-					err = withDiagnostics("extract", args[0], opts.OutDir, opts.LogFile, err)
+					err = withDiagnostics("extract", videoInput, opts.OutDir, opts.LogFile, err)
 				}
 				_ = appendTelemetryEvent(telemetryEvent{
 					Command:     "extract",
 					Status:      "error",
 					DurationMs:  time.Since(started).Milliseconds(),
-					Input:       args[0],
+					Input:       videoInput,
 					FPS:         fps,
 					FrameFormat: opts.FrameFormat,
 					HWAccel:     opts.HWAccel,
@@ -1582,7 +1676,7 @@ func extractCommand() *cobra.Command {
 				Command:       "extract",
 				Status:        "success",
 				DurationMs:    res.ElapsedMs,
-				Input:         args[0],
+				Input:         videoInput,
 				ResolvedInput: res.ResolvedVideo,
 				OutDir:        res.OutDir,
 				FPS:           res.FPS,
@@ -1596,6 +1690,8 @@ func extractCommand() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().String("url", "", "Video URL to download and extract (mutually exclusive with video path)")
+	cmd.Flags().Bool("no-cache", false, "Skip cache and re-download video even if already cached")
 	cmd.Flags().String("fps", fmt.Sprintf("%g", appCfg.DefaultFPS), "Frames per second, or 0/auto for automatic ~60-frame mode")
 	cmd.Flags().String("out", "", "Output directory")
 	cmd.Flags().Bool("voice", false, "Extract audio and generate transcript in the output folder")
@@ -3329,11 +3425,13 @@ func handleMCPRequest(req mcpRequest) *mcpResponse {
 			},
 			{
 				"name":        "extract",
-				"description": "Run single-video extraction workflow (input defaults to recent)",
+				"description": "Run single-video extraction workflow (input defaults to recent, or use url for remote videos)",
 				"inputSchema": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"input":               map[string]any{"type": "string"},
+						"url":                 map[string]any{"type": "string"},
+						"no_cache":            map[string]any{"type": "boolean"},
 						"fps":                 map[string]any{"type": "number"},
 						"voice":               map[string]any{"type": "boolean"},
 						"format":              map[string]any{"type": "string"},
@@ -3485,6 +3583,8 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 	case "extract":
 		var args struct {
 			Input              string  `json:"input"`
+			URL                string  `json:"url"`
+			NoCache            bool    `json:"no_cache"`
 			FPS                float64 `json:"fps"`
 			Voice              bool    `json:"voice"`
 			Format             string  `json:"format"`
@@ -3504,11 +3604,23 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			TranscribeLanguage string  `json:"transcribe_language"`
 		}
 		_ = json.Unmarshal(argsRaw, &args)
-		if strings.TrimSpace(args.Input) == "" {
-			args.Input = "recent"
+
+		// Validate URL vs Input mutually exclusive
+		hasURL := strings.TrimSpace(args.URL) != ""
+		hasInput := strings.TrimSpace(args.Input) != ""
+		if hasURL && hasInput {
+			return nil, fmt.Errorf("cannot specify both url and input parameters")
 		}
-		if err := ensureMCPPathAllowed(args.Input); err != nil {
-			return nil, err
+		if !hasURL && !hasInput {
+			args.Input = "recent"
+			hasInput = true
+		}
+
+		// Validate paths only for local input, not URLs
+		if hasInput {
+			if err := ensureMCPPathAllowed(args.Input); err != nil {
+				return nil, err
+			}
 		}
 		fpsExplicit := args.FPS > 0
 		formatExplicit := strings.TrimSpace(args.Format) != ""
@@ -3538,7 +3650,16 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			return nil, err
 		}
 		started := time.Now()
-		res, err := runExtractWorkflowResult(ctx, args.Input, args.FPS, extractWorkflowOptions{
+
+		// Determine input to use (URL or path)
+		videoInput := args.Input
+		if hasURL {
+			videoInput = args.URL
+		}
+
+		res, err := runExtractWorkflowResult(ctx, videoInput, args.FPS, extractWorkflowOptions{
+			URL:                args.URL,
+			NoCache:            args.NoCache,
 			OutDir:             args.Out,
 			Voice:              args.Voice,
 			FrameFormat:        args.Format,
@@ -3566,8 +3687,8 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			if ctx != nil && ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			err = withDiagnostics("mcp_extract", args.Input, args.Out, "", err)
-			return buildAutomationEnvelope("extract", started, "error", map[string]string{"input": args.Input}, err), nil
+			err = withDiagnostics("mcp_extract", videoInput, args.Out, "", err)
+			return buildAutomationEnvelope("extract", started, "error", map[string]string{"input": videoInput}, err), nil
 		}
 		return buildAutomationEnvelope("extract", started, "success", res, nil), nil
 	case "extract_batch":
@@ -4388,6 +4509,7 @@ func collectDoctorReport(cfg appconfig.Config) doctorReport {
 	}{
 		{name: "ffmpeg", required: true},
 		{name: "ffprobe", required: true},
+		{name: "yt-dlp", required: false},
 		{name: strings.TrimSpace(cfg.WhisperBin), required: false},
 		{name: strings.TrimSpace(cfg.FasterWhisperBin), required: false},
 	}
