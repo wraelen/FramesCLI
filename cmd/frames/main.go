@@ -163,6 +163,14 @@ func main() {
 	appCfg = cfg
 	appconfig.ApplyEnvDefaults(appCfg)
 
+	// Auto-detect GPU and set hwaccel if not explicitly configured
+	if appCfg.HWAccel == "" || appCfg.HWAccel == "none" {
+		gpu := detectGPU()
+		if gpu.Available {
+			appCfg.HWAccel = gpu.RecommendedHWAccel
+		}
+	}
+
 	root := &cobra.Command{
 		Use:          "framescli",
 		Short:        "FramesCLI - extract frame timelines from coding recordings",
@@ -770,17 +778,8 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		fmt.Printf("  sampling: every %d source frames\n", opts.EveryN)
 	}
 
-	// Show performance hint if GPU available but not being used
-	if interactive && !opts.Verbose {
-		gpu := detectGPU()
-		hwaccel := strings.ToLower(strings.TrimSpace(opts.HWAccel))
-		if gpu.Available && (hwaccel == "none" || hwaccel == "") {
-			fmt.Println("")
-			fmt.Printf("💡 Tip: GPU detected (%s %s)\n", gpu.Vendor, gpu.Model)
-			fmt.Printf("   Add --hwaccel %s for 10-30x faster extraction\n", gpu.RecommendedHWAccel)
-			fmt.Printf("   Or run 'framescli doctor' for hardware recommendations\n")
-		}
-	}
+	// Note: Pre-extraction hint removed since GPU is now auto-detected by default
+	// Users only need hints if they explicitly disable GPU or if auto-detection failed
 
 	if interactive {
 		if opts.URL != "" {
@@ -1098,39 +1097,16 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		fmt.Printf("Elapsed:       %s\n", time.Duration(result.ElapsedMs)*time.Millisecond)
 	}
 
-	// Show performance comparison hint if CPU-only extraction on GPU-capable machine
+	// Show performance hints only for fallback scenarios
 	if interactive && !opts.Verbose {
 		gpu := detectGPU()
-		usedHWAccel := strings.ToLower(strings.TrimSpace(extractResult.UsedHWAccel))
 
-		// Check for fallback first (GPU was attempted but failed)
+		// Only show hint if GPU acceleration was attempted but failed
 		if gpu.Available && extractResult.FallbackUsed {
 			fmt.Println("")
-			fmt.Printf("⚠️  Note: GPU acceleration failed, fell back to CPU\n")
+			fmt.Printf("⚠️  Note: GPU acceleration (%s) failed, fell back to CPU\n", opts.HWAccel)
 			fmt.Printf("   Run 'framescli doctor' to verify GPU setup\n")
-		} else if gpu.Available && (usedHWAccel == "none" || usedHWAccel == "") {
-			// GPU available but not used at all
-			// Estimate speedup based on GPU vendor
-			speedupFactor := "10-30"
-			if gpu.Vendor == "nvidia" {
-				speedupFactor = "15-30"
-			} else if gpu.Vendor == "intel" {
-				speedupFactor = "5-15"
-			}
-
-			// Calculate estimated time with GPU
-			elapsedSec := float64(result.ElapsedMs) / 1000.0
-			estimatedGPUSec := elapsedSec / 20.0 // Conservative 20x average speedup
-			if estimatedGPUSec < 1 {
-				estimatedGPUSec = 1
-			}
-
-			fmt.Println("")
-			fmt.Printf("💡 Performance Note:\n")
-			fmt.Printf("   Extraction used CPU-only (took %s)\n", time.Duration(result.ElapsedMs)*time.Millisecond)
-			fmt.Printf("   With --hwaccel %s, estimated time: ~%.0fs (%sx faster)\n",
-				gpu.RecommendedHWAccel, estimatedGPUSec, speedupFactor)
-			fmt.Printf("   Run 'framescli doctor' to see hardware optimization tips\n")
+			fmt.Printf("   Or try --hwaccel auto to let ffmpeg choose the best method\n")
 		}
 	}
 
