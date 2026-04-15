@@ -205,9 +205,83 @@ Performance mode applies preset sampling/format implicitly only when `default_fp
 - **Bubbletea/Bubbles/Lipgloss**: TUI framework
 - **Cobra**: CLI framework
 
+## gstack Integration
+
+**IMPORTANT: For all web browsing tasks, use the `/browse` skill from gstack. NEVER use `mcp__claude-in-chrome__*` tools.**
+
+gstack provides specialized workflow skills for development, design, and quality assurance. Available skills:
+
+### Planning & Review Skills
+- `/office-hours` - Executive office hours workflow
+- `/plan-ceo-review` - Plan CEO review sessions
+- `/plan-eng-review` - Plan engineering reviews
+- `/plan-design-review` - Plan design reviews
+- `/plan-devex-review` - Plan developer experience reviews
+
+### Design & Consultation
+- `/design-consultation` - Design consultation workflow
+- `/design-shotgun` - Quick design iterations
+- `/design-html` - HTML/CSS design work
+- `/design-review` - Comprehensive design reviews
+
+### Development & Shipping
+- `/review` - Code review workflow
+- `/ship` - Ship features to production
+- `/land-and-deploy` - Land code and deploy
+- `/canary` - Canary deployment workflow
+- `/autoplan` - Automated planning
+
+### Quality & Testing
+- `/qa` - Quality assurance workflow
+- `/qa-only` - QA-only mode
+- `/benchmark` - Performance benchmarking
+
+### Browser & Investigation
+- `/browse` - Web browsing with playwright (use this instead of MCP chrome tools)
+- `/connect-chrome` - Connect to Chrome instance
+- `/investigate` - Investigation workflow
+- `/setup-browser-cookies` - Configure browser authentication
+
+### Documentation & Deployment
+- `/document-release` - Document release notes
+- `/setup-deploy` - Setup deployment configuration
+- `/retro` - Retrospective workflow
+- `/codex` - Documentation generation
+
+### Safety & Controls
+- `/careful` - Enable careful mode
+- `/freeze` - Freeze current state
+- `/guard` - Enable guard mode
+- `/unfreeze` - Unfreeze state
+- `/cso` - Chief Security Officer workflow
+
+### Utilities
+- `/learn` - Learning workflow
+- `/gstack-upgrade` - Upgrade gstack skills
+
 ## Troubleshooting
 
 - If tests fail with "ffmpeg not found", install ffmpeg: `make deps`
 - Integration tests require real media tools: `make deps` or `./scripts/install-deps.sh --install`
 - WSL path issues: ensure `NormalizeVideoPath()` is called before file operations
 - MCP stdio issues: test with `go test ./cmd/frames -run TestMCPServer -v`
+
+## Skill routing
+
+When the user's request matches an available skill, ALWAYS invoke it using the Skill
+tool as your FIRST action. Do NOT answer directly, do NOT use other tools first.
+The skill has specialized workflows that produce better results than ad-hoc answers.
+
+Key routing rules:
+- Product ideas, "is this worth building", brainstorming → invoke office-hours
+- Bugs, errors, "why is this broken", 500 errors → invoke investigate
+- Ship, deploy, push, create PR → invoke ship
+- QA, test the site, find bugs → invoke qa
+- Code review, check my diff → invoke review
+- Update docs after shipping → invoke document-release
+- Weekly retro → invoke retro
+- Design system, brand → invoke design-consultation
+- Visual audit, design polish → invoke design-review
+- Architecture review → invoke plan-eng-review
+- Save progress, checkpoint, resume → invoke checkpoint
+- Code quality, health check → invoke health
