@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"math"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,6 +56,10 @@ type ExtractMediaOptions struct {
 	AudioStart   string
 	AudioEnd     string
 	MetadataCSV  bool
+	// Source metadata for descriptive artifact naming
+	SourceType  string // "url" or "file"
+	SourceURL   string // Original URL if downloaded
+	SourceTitle string // Video title from yt-dlp metadata
 }
 
 type ExtractMediaResult struct {
@@ -94,6 +99,10 @@ type RunMetadata struct {
 	FramePattern   string  `json:"frame_pattern,omitempty"`
 	MetadataCSV    bool    `json:"metadata_csv,omitempty"`
 	FramesZipPath  string  `json:"frames_zip_path,omitempty"`
+	// Source metadata
+	SourceType  string `json:"source_type,omitempty"`  // "url" or "file"
+	SourceURL   string `json:"source_url,omitempty"`   // Original URL if downloaded
+	SourceTitle string `json:"source_title,omitempty"` // Video title from yt-dlp
 }
 
 type VideoInfo struct {
@@ -210,7 +219,7 @@ func ExtractMedia(opts ExtractMediaOptions) (*ExtractMediaResult, error) {
 	}
 	outDir := opts.OutDir
 	if outDir == "" {
-		timestamp := makeRunFolderName(time.Now())
+		timestamp := makeRunFolderName(time.Now(), opts.SourceType, opts.SourceURL, opts.SourceTitle)
 		outDir = filepath.Join(DefaultFramesRoot, timestamp)
 		outDir = ensureUniquePath(outDir)
 	}
@@ -357,6 +366,9 @@ func ExtractMedia(opts ExtractMediaOptions) (*ExtractMediaResult, error) {
 		FramePattern:   opts.FramePattern,
 		MetadataCSV:    opts.MetadataCSV,
 		FramesZipPath:  zipPath,
+		SourceType:     opts.SourceType,
+		SourceURL:      opts.SourceURL,
+		SourceTitle:    opts.SourceTitle,
 	}
 	metadataPath := MetadataPathForRun(outDir)
 	if raw, err := json.MarshalIndent(metadata, "", "  "); err == nil {
@@ -1078,7 +1090,118 @@ func errorString(err error) string {
 	return err.Error()
 }
 
-func makeRunFolderName(now time.Time) string {
+// sanitizeTitle converts a video title into a filesystem-safe string
+func sanitizeTitle(title string, maxLen int) string {
+	if maxLen <= 0 {
+		maxLen = 50
+	}
+	// Remove/replace special characters
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ""
+	}
+
+	// Replace sequences of non-alphanumeric chars with single dash
+	var result strings.Builder
+	lastWasDash := false
+	for _, r := range title {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			result.WriteRune(r)
+			lastWasDash = false
+		} else if !lastWasDash {
+			result.WriteRune('-')
+			lastWasDash = true
+		}
+	}
+
+	sanitized := strings.Trim(result.String(), "-")
+	if len(sanitized) > maxLen {
+		sanitized = sanitized[:maxLen]
+		sanitized = strings.TrimRight(sanitized, "-")
+	}
+	return sanitized
+}
+
+// extractDomainAndID extracts domain and video ID from common video URLs
+func extractDomainAndID(rawURL string) (domain string, id string) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "url", ""
+	}
+
+	domain = parsed.Host
+	// Remove www. prefix
+	domain = strings.TrimPrefix(domain, "www.")
+	// Get main domain (youtube.com, vimeo.com, etc.)
+	parts := strings.Split(domain, ".")
+	if len(parts) >= 2 {
+		domain = parts[len(parts)-2]
+	}
+
+	// Extract video ID for common platforms
+	if strings.Contains(parsed.Host, "youtube.com") || strings.Contains(parsed.Host, "youtu.be") {
+		query := parsed.Query()
+		if v := query.Get("v"); v != "" {
+			id = v // youtube.com/watch?v=ID
+		} else if len(parsed.Path) > 1 {
+			id = strings.Trim(parsed.Path, "/") // youtu.be/ID
+		}
+	} else if strings.Contains(parsed.Host, "vimeo.com") {
+		id = strings.Trim(parsed.Path, "/")
+	} else if strings.Contains(parsed.Host, "archive.org") {
+		// Extract meaningful part from archive.org URLs
+		pathParts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		if len(pathParts) >= 2 {
+			id = pathParts[len(pathParts)-2] // e.g., "details/NOTLD1968"
+		}
+	}
+
+	// Fallback: use first part of path
+	if id == "" && len(parsed.Path) > 1 {
+		pathParts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		if len(pathParts) > 0 {
+			id = pathParts[0]
+		}
+	}
+
+	return domain, id
+}
+
+// makeRunFolderName generates a folder name for an extraction run
+// If sourceType is "url", creates descriptive name like "youtube-ID-Title"
+// Otherwise falls back to timestamp-based name
+func makeRunFolderName(now time.Time, sourceType, sourceURL, sourceTitle string) string {
+	if sourceType == "url" && sourceURL != "" {
+		domain, id := extractDomainAndID(sourceURL)
+		sanitized := sanitizeTitle(sourceTitle, 50)
+
+		// Build name: domain-id-title
+		var parts []string
+		if domain != "" {
+			parts = append(parts, domain)
+		}
+		if id != "" {
+			// Limit ID length to prevent overly long names
+			if len(id) > 20 {
+				id = id[:20]
+			}
+			parts = append(parts, id)
+		}
+		if sanitized != "" {
+			parts = append(parts, sanitized)
+		}
+
+		if len(parts) > 0 {
+			name := strings.Join(parts, "-")
+			// Ensure total length doesn't exceed filesystem limits
+			if len(name) > 150 {
+				name = name[:150]
+			}
+			return name
+		}
+	}
+
+	// Fallback to timestamp-based name (original behavior)
 	weekday := now.Weekday().String()
 	hour := now.Hour()
 	minute := now.Minute()

@@ -655,6 +655,9 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 
 	// Handle URL download if --url was provided
 	downloadNote := ""
+	sourceType := "file"
+	sourceURL := ""
+	sourceTitle := ""
 	if opts.URL != "" {
 		if interactive {
 			fmt.Println("[1/5] Downloading video from URL")
@@ -678,6 +681,9 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 			return result, fmt.Errorf("failed to download video: %w", err)
 		}
 		videoInput = downloadResult.LocalPath
+		sourceType = "url"
+		sourceURL = opts.URL
+		sourceTitle = downloadResult.Metadata.Title
 		if downloadResult.WasCached {
 			downloadNote = fmt.Sprintf("cached from %s", opts.URL)
 			if interactive {
@@ -806,6 +812,9 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		Normalize:    opts.NormalizeAudio,
 		AudioStart:   opts.AudioStart,
 		AudioEnd:     opts.AudioEnd,
+		SourceType:   sourceType,
+		SourceURL:    sourceURL,
+		SourceTitle:  sourceTitle,
 	})
 	if err != nil {
 		if interactive && !opts.Verbose {
@@ -4433,6 +4442,13 @@ type toolCheck struct {
 	Error    string `json:"error,omitempty"`
 }
 
+type gpuInfo struct {
+	Available          bool   `json:"available"`
+	Vendor             string `json:"vendor"` // "nvidia", "amd", "intel", "apple", "none"
+	Model              string `json:"model,omitempty"`
+	RecommendedHWAccel string `json:"recommended_hwaccel"` // "cuda", "vaapi", "qsv", "videotoolbox", "none"
+}
+
 type doctorReport struct {
 	GeneratedAt              string                        `json:"generated_at"`
 	GOOS                     string                        `json:"goos"`
@@ -4441,7 +4457,8 @@ type doctorReport struct {
 	Config                   appconfig.Config              `json:"config"`
 	Environment              map[string]string             `json:"environment"`
 	Tools                    []toolCheck                   `json:"tools"`
-	GPUAvailable             bool                          `json:"gpu_available"`
+	GPU                      gpuInfo                       `json:"gpu"`
+	GPUAvailable             bool                          `json:"gpu_available"` // Deprecated: use GPU.Available
 	TranscribeBackend        string                        `json:"transcribe_backend"`
 	WhisperModel             string                        `json:"whisper_model"`
 	EstimatedTranscribeSpeed string                        `json:"estimated_transcribe_speed"`
@@ -4455,19 +4472,180 @@ type doctorReport struct {
 	RequiredFailed           bool                          `json:"required_failed"`
 }
 
-func doctorHasGPU() bool {
+func detectGPU() gpuInfo {
+	// Check NVIDIA GPU
+	if gpu := detectNVIDIA(); gpu.Available {
+		return gpu
+	}
+
+	// Check AMD GPU
+	if gpu := detectAMD(); gpu.Available {
+		return gpu
+	}
+
+	// Check Intel QuickSync
+	if gpu := detectIntel(); gpu.Available {
+		return gpu
+	}
+
+	// Check Apple Silicon
+	if gpu := detectApple(); gpu.Available {
+		return gpu
+	}
+
+	// No GPU detected
+	return gpuInfo{
+		Available:          false,
+		Vendor:             "none",
+		Model:              "",
+		RecommendedHWAccel: "none",
+	}
+}
+
+func detectNVIDIA() gpuInfo {
+	// Check nvidia-smi
 	if _, err := exec.LookPath("nvidia-smi"); err == nil {
-		cmd := exec.Command("nvidia-smi")
-		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
-		if err := cmd.Run(); err == nil {
-			return true
+		cmd := exec.Command("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")
+		output, err := cmd.Output()
+		if err == nil {
+			model := strings.TrimSpace(string(output))
+			if model != "" {
+				// If multiple GPUs, take the first one
+				if idx := strings.Index(model, "\n"); idx > 0 {
+					model = model[:idx]
+				}
+				return gpuInfo{
+					Available:          true,
+					Vendor:             "nvidia",
+					Model:              model,
+					RecommendedHWAccel: "cuda",
+				}
+			}
 		}
 	}
+
+	// Fallback: check for /dev/nvidia* devices
 	if _, err := os.Stat("/dev/nvidia0"); err == nil {
-		return true
+		return gpuInfo{
+			Available:          true,
+			Vendor:             "nvidia",
+			Model:              "NVIDIA GPU",
+			RecommendedHWAccel: "cuda",
+		}
 	}
-	return false
+
+	return gpuInfo{Available: false}
+}
+
+func detectAMD() gpuInfo {
+	// Check for AMD GPU via rocm-smi (ROCm)
+	if _, err := exec.LookPath("rocm-smi"); err == nil {
+		cmd := exec.Command("rocm-smi", "--showproductname")
+		output, err := cmd.Output()
+		if err == nil {
+			lines := strings.Split(string(output), "\n")
+			for _, line := range lines {
+				if strings.Contains(line, "GPU") && strings.Contains(line, ":") {
+					parts := strings.SplitN(line, ":", 2)
+					if len(parts) == 2 {
+						model := strings.TrimSpace(parts[1])
+						if model != "" {
+							return gpuInfo{
+								Available:          true,
+								Vendor:             "amd",
+								Model:              model,
+								RecommendedHWAccel: "vaapi",
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: check for AMD GPU via /dev/dri/renderD*
+	files, err := filepath.Glob("/dev/dri/renderD*")
+	if err == nil && len(files) > 0 {
+		// Check if it's AMD by looking at driver
+		if _, err := os.Stat("/sys/module/amdgpu"); err == nil {
+			return gpuInfo{
+				Available:          true,
+				Vendor:             "amd",
+				Model:              "AMD GPU",
+				RecommendedHWAccel: "vaapi",
+			}
+		}
+	}
+
+	return gpuInfo{Available: false}
+}
+
+func detectIntel() gpuInfo {
+	// Check for Intel GPU via vainfo
+	if _, err := exec.LookPath("vainfo"); err == nil {
+		cmd := exec.Command("vainfo")
+		output, err := cmd.Output()
+		if err == nil {
+			outStr := string(output)
+			if strings.Contains(outStr, "Intel") {
+				// Try to extract model from vainfo output
+				model := "Intel GPU"
+				for _, line := range strings.Split(outStr, "\n") {
+					if strings.Contains(line, "Driver version:") {
+						model = strings.TrimSpace(strings.TrimPrefix(line, "Driver version:"))
+						break
+					}
+				}
+				return gpuInfo{
+					Available:          true,
+					Vendor:             "intel",
+					Model:              model,
+					RecommendedHWAccel: "qsv",
+				}
+			}
+		}
+	}
+
+	// Fallback: check for Intel GPU driver
+	if _, err := os.Stat("/sys/module/i915"); err == nil {
+		return gpuInfo{
+			Available:          true,
+			Vendor:             "intel",
+			Model:              "Intel GPU",
+			RecommendedHWAccel: "qsv",
+		}
+	}
+
+	return gpuInfo{Available: false}
+}
+
+func detectApple() gpuInfo {
+	// Apple Silicon always has integrated GPU
+	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		// Try to detect M-series chip
+		cmd := exec.Command("sysctl", "-n", "machdep.cpu.brand_string")
+		output, err := cmd.Output()
+		model := "Apple Silicon"
+		if err == nil {
+			brand := strings.TrimSpace(string(output))
+			if brand != "" {
+				model = brand
+			}
+		}
+		return gpuInfo{
+			Available:          true,
+			Vendor:             "apple",
+			Model:              model,
+			RecommendedHWAccel: "videotoolbox",
+		}
+	}
+
+	return gpuInfo{Available: false}
+}
+
+// Deprecated: use detectGPU() instead
+func doctorHasGPU() bool {
+	return detectGPU().Available
 }
 
 func collectDoctorReport(cfg appconfig.Config) doctorReport {
@@ -4478,12 +4656,14 @@ func collectDoctorReport(cfg appconfig.Config) doctorReport {
 	if whisperModel == "" {
 		whisperModel = "base"
 	}
+	gpu := detectGPU()
 	r := doctorReport{
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 		GOOS:         runtime.GOOS,
 		GOARCH:       runtime.GOARCH,
 		Config:       cfg,
-		GPUAvailable: doctorHasGPU(),
+		GPU:          gpu,
+		GPUAvailable: gpu.Available, // Deprecated field for backward compatibility
 		WhisperModel: whisperModel,
 		Environment: map[string]string{
 			"OBS_VIDEO_DIR":      valueOrDash(os.Getenv("OBS_VIDEO_DIR")),
@@ -4570,20 +4750,35 @@ func printDoctorReport(r doctorReport) {
 	fmt.Printf("WHISPER_MODEL:     %s\n", valueOrDash(r.Environment["WHISPER_MODEL"]))
 	fmt.Printf("WHISPER_LANGUAGE:  %s\n", valueOrDash(r.Environment["WHISPER_LANGUAGE"]))
 	fmt.Printf("TRANSCRIBE_BACKEND:%s\n", valueOrDash(r.Environment["TRANSCRIBE_BACKEND"]))
-	fmt.Printf("GPU_AVAILABLE:     %t\n", r.GPUAvailable)
-	fmt.Printf("TRANSCRIBE_RESOLVED:%s\n", valueOrDash(r.TranscribeBackend))
-	fmt.Printf("WHISPER_MODEL_CFG: %s\n", valueOrDash(r.WhisperModel))
-	fmt.Printf("TRANSCRIBE_SPEED:  %s\n", valueOrDash(r.EstimatedTranscribeSpeed))
-	fmt.Printf("TRANSCRIBE_HINT:   %s\n", valueOrDash(r.TranscribeCostHint))
-	if strings.TrimSpace(r.FFmpegVersion) != "" {
-		fmt.Printf("FFMPEG_VERSION:    %s\n", r.FFmpegVersion)
+
+	fmt.Println("")
+	fmt.Println("Hardware")
+	if r.GPU.Available {
+		fmt.Printf("GPU:               %s (%s)\n", r.GPU.Model, r.GPU.Vendor)
+		fmt.Printf("Recommended:       hwaccel=%s\n", r.GPU.RecommendedHWAccel)
 	} else {
-		fmt.Printf("FFMPEG_VERSION:    unavailable (%s)\n", valueOrDash(r.FFmpegVersionError))
+		fmt.Printf("GPU:               none detected\n")
+		fmt.Printf("Mode:              CPU-only\n")
+	}
+
+	fmt.Println("")
+	fmt.Println("Transcription")
+	fmt.Printf("Backend:           %s\n", valueOrDash(r.TranscribeBackend))
+	fmt.Printf("Model:             %s\n", valueOrDash(r.WhisperModel))
+	fmt.Printf("Estimated Speed:   %s\n", valueOrDash(r.EstimatedTranscribeSpeed))
+	fmt.Printf("Cost Hint:         %s\n", valueOrDash(r.TranscribeCostHint))
+
+	fmt.Println("")
+	fmt.Println("FFmpeg")
+	if strings.TrimSpace(r.FFmpegVersion) != "" {
+		fmt.Printf("Version:           %s\n", r.FFmpegVersion)
+	} else {
+		fmt.Printf("Version:           unavailable (%s)\n", valueOrDash(r.FFmpegVersionError))
 	}
 	if len(r.FFmpegHWAccels) > 0 {
-		fmt.Printf("FFMPEG_HWACCELS:   %s\n", strings.Join(r.FFmpegHWAccels, ", "))
+		fmt.Printf("HW Accelerators:   %s\n", strings.Join(r.FFmpegHWAccels, ", "))
 	} else {
-		fmt.Printf("FFMPEG_HWACCELS:   unavailable (%s)\n", valueOrDash(r.FFmpegHWAccelsError))
+		fmt.Printf("HW Accelerators:   unavailable (%s)\n", valueOrDash(r.FFmpegHWAccelsError))
 	}
 	if len(r.ConfigWarnings) > 0 {
 		fmt.Println("")
@@ -4600,6 +4795,65 @@ func printDoctorReport(r doctorReport) {
 		fmt.Println("- Ubuntu/Debian/WSL: sudo apt install ffmpeg")
 		fmt.Println("- Fedora: sudo dnf install ffmpeg")
 		fmt.Println("- Verify PATH then re-run: framescli doctor")
+	}
+
+	// Show recommendations based on detected hardware and config
+	recommendations := []string{}
+
+	// GPU recommendations
+	if r.GPU.Available {
+		currentHWAccel := strings.ToLower(strings.TrimSpace(r.Config.HWAccel))
+		if currentHWAccel == "none" || currentHWAccel == "" {
+			recommendations = append(recommendations,
+				fmt.Sprintf("Enable GPU acceleration: framescli prefs set hwaccel %s", r.GPU.RecommendedHWAccel))
+			recommendations = append(recommendations,
+				fmt.Sprintf("Or add --hwaccel %s to extract commands for 10-30x faster extraction", r.GPU.RecommendedHWAccel))
+		} else if currentHWAccel == "auto" {
+			recommendations = append(recommendations,
+				fmt.Sprintf("Consider setting specific hwaccel mode for best performance: framescli prefs set hwaccel %s", r.GPU.RecommendedHWAccel))
+		}
+
+		// Preset recommendations for GPU users
+		currentPreset := strings.ToLower(strings.TrimSpace(r.Config.PerformanceMode))
+		if currentPreset == "laptop-safe" || currentPreset == "safe" {
+			recommendations = append(recommendations,
+				"Your GPU can handle higher quality: consider --preset balanced or --preset high-fidelity")
+		}
+	} else {
+		// CPU-only recommendations
+		currentPreset := strings.ToLower(strings.TrimSpace(r.Config.PerformanceMode))
+		if currentPreset != "laptop-safe" && currentPreset != "safe" {
+			recommendations = append(recommendations,
+				"No GPU detected: consider --preset laptop-safe for better CPU performance")
+		}
+	}
+
+	// Transcription recommendations
+	if r.GPU.Available && r.TranscribeBackend != "faster-whisper" {
+		// Check if faster-whisper is available
+		if _, err := exec.LookPath("faster-whisper"); err == nil {
+			recommendations = append(recommendations,
+				"Faster transcription available: framescli prefs set transcribe_backend faster-whisper")
+		}
+	}
+
+	// Whisper model recommendations
+	if r.WhisperModel == "base" {
+		if r.GPU.Available {
+			recommendations = append(recommendations,
+				"Upgrade to better model for GPU: WHISPER_MODEL=medium (better accuracy, still fast)")
+		} else {
+			recommendations = append(recommendations,
+				"Upgrade model carefully on CPU: WHISPER_MODEL=small (better accuracy, 2-3x slower)")
+		}
+	}
+
+	if len(recommendations) > 0 {
+		fmt.Println("")
+		fmt.Println("Recommendations")
+		for _, rec := range recommendations {
+			fmt.Printf("→ %s\n", rec)
+		}
 	}
 }
 
