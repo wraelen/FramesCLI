@@ -41,3 +41,47 @@ changelog:
     exclude:
       - '^docs:'
       - '^test:'
+
+brews:
+  - name: framescli
+    repository:
+      owner: wraelen
+      name: homebrew-tap
+      token: "{{ .Env.GITHUB_TOKEN }}"
+
+    homepage: "https://github.com/wraelen/framescli"
+    description: "Extract video frames and transcripts for AI analysis. Let AI agents watch videos."
+
+    license: "MIT"
+
+    dependencies:
+      - name: ffmpeg
+        type: required
+      - name: yt-dlp
+        type: optional
+
+    install: |
+      bin.install "framescli"
+
+    test: |
+      system "#{bin}/framescli", "--version"
+
+    caveats: |
+      FramesCLI requires ffmpeg and ffprobe to extract video frames.
+
+      Optional dependencies for additional features:
+        • yt-dlp: Download videos from URLs (YouTube, Vimeo, etc)
+        • whisper or faster-whisper: Transcribe audio to text
+
+      To install optional dependencies:
+        brew install yt-dlp
+        pip install openai-whisper
+
+      Quick start:
+        framescli doctor          # Check dependencies
+        framescli extract video.mp4 --fps 4 --preset balanced
+
+      For MCP integration (Claude Desktop, Cursor, etc):
+        framescli mcp
+
+      Full documentation: https://github.com/wraelen/framescli
