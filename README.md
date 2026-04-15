@@ -106,7 +106,6 @@ Once FramesCLI extracts frames and transcripts, your AI agent can:
 - Local transcription with selectable backend (`auto|whisper|faster-whisper`) and outputs (`txt`, `json`, `srt`, `vtt`)
 - Batch processing across multiple files/globs
 - Machine-readable `--json` outputs for automation
-- Terminal TUI with extraction wizard, queueing, previews, and history
 - MCP server mode (`framescli mcp`) for IDE/agent integration
 - Diagnostics bundles for failed runs
 
@@ -478,12 +477,10 @@ framescli preview <videoPath|recent> [--preset balanced] [--fps auto --format pn
 framescli artifacts [run|latest] [--recent 5] [--json]
 framescli open-last [--artifact run|transcript|transcript-json|transcript-srt|transcript-vtt|sheet|log|metadata|frames|manifest|metadata-csv|frames-zip|audio]
 framescli copy-last [--artifact run|transcript|transcript-json|transcript-srt|transcript-vtt|sheet|log|metadata|frames|manifest|metadata-csv|frames-zip|audio]
-framescli import [videoPath] [--voice] [--fps 4] [--format png|jpg] [--no-modal]
 framescli sheet <framesDir> [--cols 6] [--out contact-sheet.png]
 framescli transcribe <audioPath> [outDir] [--chunk-duration 600]
 framescli transcribe-run <runDir> [--chunk-duration 600] [--timeout 300] [--json]
 framescli clean [targetDir]
-framescli tui [--root frames]
 framescli doctor [--json] [--report] [--report-out path]
 framescli index [rootDir] [--out index.json]
 framescli benchmark <videoPath|recent> [--duration 20]
@@ -740,39 +737,6 @@ Available hook env vars:
 - `FRAMESCLI_HOOK_OUT_DIR`
 - `FRAMESCLI_HOOK_ARTIFACTS_JSON`
 - `FRAMESCLI_HOOK_RESULT_JSON`
-
-## TUI
-
-Launch:
-
-```bash
-framescli tui
-```
-
-Highlights:
-
-- Import flow with in-terminal extraction wizard
-- Queue multiple jobs and run sequentially
-- Review step with sampled frame preview (`chafa` if available)
-- Save reusable extraction profiles
-- Retry failed queue jobs from result view
-- Stage-aware progress + cancellation support
-- Vim-mode keymap toggle (`m`)
-
-Key bindings:
-
-```text
-[q] Quit
-[i] Import video
-[c] Cancel active extraction
-[r] Refresh runs
-[g] Guided tour
-[m] Toggle vim keymap mode
-[v] Cycle theme preset
-[?] Help panel
-[/] Filter runs
-[Ctrl+k] Command menu
-```
 
 ## Agent and MCP Integration
 

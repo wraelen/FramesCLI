@@ -25,7 +25,6 @@ import (
 
 	appconfig "github.com/wraelen/framescli/internal/config"
 	"github.com/wraelen/framescli/internal/media"
-	"github.com/wraelen/framescli/internal/tui"
 )
 
 var appCfg appconfig.Config
@@ -184,12 +183,10 @@ func main() {
 	root.AddCommand(copyLastCommand())
 	root.AddCommand(artifactsCommand())
 	root.AddCommand(mcpCommand())
-	root.AddCommand(importCommand())
 	root.AddCommand(sheetCommand())
 	root.AddCommand(cleanCommand())
 	root.AddCommand(transcribeCommand())
 	root.AddCommand(transcribeRunCommand())
-	root.AddCommand(tuiCommand())
 	root.AddCommand(doctorCommand())
 	root.AddCommand(indexCommand())
 	root.AddCommand(benchmarkCommand())
@@ -4063,164 +4060,6 @@ func writeMCPMessage(out io.Writer, resp *mcpResponse) error {
 	return err
 }
 
-func importCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:     "import [videoPath]",
-		Aliases: []string{"drop"},
-		Short:   "Import a video path and run extraction",
-		Args:    cobra.MaximumNArgs(1),
-		Run: func(cmd *cobra.Command, args []string) {
-			videoPath := ""
-			if len(args) == 1 {
-				videoPath = args[0]
-			} else {
-				reader := bufio.NewReader(os.Stdin)
-				fmt.Print("Paste a video path, then press Enter: ")
-				line, err := reader.ReadString('\n')
-				if err != nil && strings.TrimSpace(line) == "" {
-					failf("failed to read video path: %v\n", err)
-					return
-				}
-				videoPath = line
-			}
-			videoPath = normalizeDroppedPath(videoPath)
-			if strings.TrimSpace(videoPath) == "" {
-				failln("no video path provided")
-				return
-			}
-			noModal, _ := cmd.Flags().GetBool("no-modal")
-			fps, _ := cmd.Flags().GetFloat64("fps")
-			fpsExplicit := cmd.Flags().Changed("fps")
-			outDir, _ := cmd.Flags().GetString("out")
-			voice, _ := cmd.Flags().GetBool("voice")
-			frameFormat, _ := cmd.Flags().GetString("format")
-			if !cmd.Flags().Changed("format") && appCfg.DefaultFormat != "" {
-				frameFormat = appCfg.DefaultFormat
-			}
-			jpgQuality, _ := cmd.Flags().GetInt("quality")
-			noSheet, _ := cmd.Flags().GetBool("no-sheet")
-			sheetCols, _ := cmd.Flags().GetInt("sheet-cols")
-			verbose, _ := cmd.Flags().GetBool("verbose")
-			hwaccel, _ := cmd.Flags().GetString("hwaccel")
-			preset, _ := cmd.Flags().GetString("preset")
-			chunkDuration, _ := cmd.Flags().GetInt("chunk-duration")
-			startTime, _ := cmd.Flags().GetString("from")
-			endTime, _ := cmd.Flags().GetString("to")
-			startFrame, _ := cmd.Flags().GetInt("frame-start")
-			endFrame, _ := cmd.Flags().GetInt("frame-end")
-			everyN, _ := cmd.Flags().GetInt("every-n")
-			frameName, _ := cmd.Flags().GetString("name-template")
-			zipFrames, _ := cmd.Flags().GetBool("zip")
-			logFile, _ := cmd.Flags().GetString("log-file")
-			metadataCSV, _ := cmd.Flags().GetBool("metadata-csv")
-			audioFormat, _ := cmd.Flags().GetString("audio-format")
-			audioBitrate, _ := cmd.Flags().GetString("audio-bitrate")
-			normalizeAudio, _ := cmd.Flags().GetBool("normalize-audio")
-			audioStart, _ := cmd.Flags().GetString("audio-from")
-			audioEnd, _ := cmd.Flags().GetString("audio-to")
-			transcribeModel, _ := cmd.Flags().GetString("transcribe-model")
-			transcribeBackend, _ := cmd.Flags().GetString("transcribe-backend")
-			transcribeBin, _ := cmd.Flags().GetString("transcribe-bin")
-			transcribeLanguage, _ := cmd.Flags().GetString("transcribe-language")
-			allowExpensive, _ := cmd.Flags().GetBool("allow-expensive")
-			if !cmd.Flags().Changed("hwaccel") {
-				hwaccel = appCfg.HWAccel
-			}
-			if !cmd.Flags().Changed("preset") {
-				preset = appCfg.PerformanceMode
-			}
-			opts := extractWorkflowOptions{
-				OutDir:             outDir,
-				Voice:              voice,
-				FrameFormat:        frameFormat,
-				FormatExplicit:     cmd.Flags().Changed("format"),
-				JPGQuality:         jpgQuality,
-				NoSheet:            noSheet,
-				SheetCols:          sheetCols,
-				Verbose:            verbose,
-				HWAccel:            hwaccel,
-				Preset:             preset,
-				PresetExplicit:     cmd.Flags().Changed("preset"),
-				FPSExplicit:        fpsExplicit,
-				StartTime:          startTime,
-				EndTime:            endTime,
-				StartFrame:         startFrame,
-				EndFrame:           endFrame,
-				EveryN:             everyN,
-				FrameName:          frameName,
-				ZipFrames:          zipFrames,
-				LogFile:            logFile,
-				MetadataCSV:        metadataCSV,
-				AudioFormat:        audioFormat,
-				AudioBitrate:       audioBitrate,
-				NormalizeAudio:     normalizeAudio,
-				AudioStart:         audioStart,
-				AudioEnd:           audioEnd,
-				TranscribeModel:    transcribeModel,
-				TranscribeBackend:  transcribeBackend,
-				TranscribeBin:      transcribeBin,
-				TranscribeLanguage: transcribeLanguage,
-				ChunkDurationSec:   chunkDuration,
-				ChunkExplicit:      cmd.Flags().Changed("chunk-duration"),
-				AllowExpensive:     allowExpensive,
-			}
-			if !noModal {
-				result, cancelled, err := runDropModal(videoPath, fps, opts)
-				if err != nil {
-					failf("import modal failed: %v\n", err)
-					return
-				}
-				if cancelled {
-					fmt.Println("Cancelled.")
-					return
-				}
-				fps = result.FPS
-				opts = result.Opts
-			}
-			if err := runExtractWorkflow(cmd.Context(), videoPath, fps, opts); err != nil {
-				if isCancellationError(err) {
-					markCommandInterrupted()
-					fmt.Fprintln(os.Stderr, "Cancelled.")
-				} else {
-					failf("%v\n", err)
-				}
-			}
-		},
-	}
-	cmd.Flags().Float64("fps", appCfg.DefaultFPS, "Frames per second")
-	cmd.Flags().String("out", "", "Output directory")
-	cmd.Flags().Bool("voice", false, "Extract audio and generate transcript in the output folder")
-	cmd.Flags().String("format", appCfg.DefaultFormat, "Frame output format: png or jpg")
-	cmd.Flags().Int("quality", 3, "JPG quality (1-31, lower is better quality)")
-	cmd.Flags().Bool("no-sheet", false, "Skip contact sheet generation")
-	cmd.Flags().Int("sheet-cols", 6, "Columns in generated contact sheet")
-	cmd.Flags().Bool("verbose", false, "Show raw ffmpeg/whisper logs")
-	cmd.Flags().Bool("no-modal", false, "Skip import config modal and run immediately")
-	cmd.Flags().String("hwaccel", appCfg.HWAccel, "Hardware acceleration mode: none|auto|cuda|vaapi|qsv")
-	cmd.Flags().String("preset", appCfg.PerformanceMode, "Workflow preset: laptop-safe|balanced|high-fidelity (legacy: safe|fast)")
-	cmd.Flags().String("from", "", "Start timestamp (e.g. 00:30 or seconds)")
-	cmd.Flags().String("to", "", "End timestamp (e.g. 01:45 or seconds)")
-	cmd.Flags().Int("frame-start", 0, "Source frame start index (inclusive)")
-	cmd.Flags().Int("frame-end", 0, "Source frame end index (inclusive)")
-	cmd.Flags().Int("every-n", 0, "Sample every N source frames")
-	cmd.Flags().String("name-template", "frame-%04d", "Frame filename template without extension")
-	cmd.Flags().Bool("zip", false, "Zip extracted frames as frames.zip")
-	cmd.Flags().Bool("metadata-csv", false, "Export frame metadata CSV")
-	cmd.Flags().String("log-file", "", "Write extraction logs to a file")
-	cmd.Flags().String("audio-format", "wav", "Audio format: wav|mp3|aac")
-	cmd.Flags().String("audio-bitrate", "128k", "Audio bitrate for mp3/aac")
-	cmd.Flags().Bool("normalize-audio", false, "Apply loudnorm audio normalization")
-	cmd.Flags().String("audio-from", "", "Audio trim start time (seconds or HH:MM:SS)")
-	cmd.Flags().String("audio-to", "", "Audio trim end time (seconds or HH:MM:SS)")
-	cmd.Flags().String("transcribe-model", "", "Whisper model override (e.g. tiny/base)")
-	cmd.Flags().String("transcribe-backend", appCfg.TranscribeBackend, "Transcription backend: auto|whisper|faster-whisper")
-	cmd.Flags().String("transcribe-bin", "", "Override transcription CLI binary path/name for selected backend")
-	cmd.Flags().String("transcribe-language", appCfg.WhisperLanguage, "Transcription language override (blank=auto)")
-	cmd.Flags().Int("chunk-duration", 0, "Split voice transcription into N-second chunks (0 uses preset default)")
-	cmd.Flags().Bool("allow-expensive", false, "Allow workloads that exceed long-input guardrails")
-	return cmd
-}
-
 func sheetCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sheet <framesDir>",
@@ -4391,24 +4230,6 @@ func transcribeRunCommand() *cobra.Command {
 	cmd.Flags().Int("chunk-duration", 0, "Split transcription into N-second chunks and persist resume manifest (0 disables chunking)")
 	cmd.Flags().Int("timeout", 0, "Stop transcription if it runs longer than N seconds (0 disables timeout)")
 	cmd.Flags().Bool("json", false, "Output machine-readable JSON")
-	return cmd
-}
-
-func tuiCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "tui",
-		Short: "Launch FramesCLI dashboard TUI",
-		Run: func(cmd *cobra.Command, args []string) {
-			rootDir, _ := cmd.Flags().GetString("root")
-			if !cmd.Flags().Changed("root") && strings.TrimSpace(appCfg.FramesRoot) != "" {
-				rootDir = appCfg.FramesRoot
-			}
-			if err := tui.Run(rootDir); err != nil {
-				failf("TUI failed: %s\n", renderUserFacingError(err))
-			}
-		},
-	}
-	cmd.Flags().String("root", media.DefaultFramesRoot, "Directory containing extracted runs")
 	return cmd
 }
 
@@ -5268,9 +5089,6 @@ func configCommand() *cobra.Command {
 			fmt.Printf("Performance:     %s\n", appCfg.PerformanceMode)
 			fmt.Printf("Default FPS:     %.2f\n", appCfg.DefaultFPS)
 			fmt.Printf("Default Format:  %s\n", appCfg.DefaultFormat)
-			fmt.Printf("TUI Theme:       %s\n", appCfg.TUIThemePreset)
-			fmt.Printf("TUI Simple Mode: %s\n", boolWord(appCfg.TUISimpleMode))
-			fmt.Printf("TUI Welcome Seen:%s\n", boolWord(appCfg.TUIWelcomeSeen))
 			fmt.Printf("Whisper Bin:     %s\n", appCfg.WhisperBin)
 			fmt.Printf("FasterWhisper:   %s\n", appCfg.FasterWhisperBin)
 			fmt.Printf("Whisper Model:   %s\n", appCfg.WhisperModel)
@@ -5414,7 +5232,7 @@ func setupCommand() *cobra.Command {
 			fmt.Printf("Saved config: %s\n", path)
 			fmt.Println("Next steps:")
 			fmt.Println("- Run `framescli doctor` to validate local dependencies.")
-			fmt.Println("- Run `framescli import` or `framescli tui` to start processing video.")
+			fmt.Println("- Run `framescli extract <video>` to process video, or `framescli mcp` for agent integration.")
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "Write current defaults without prompts")

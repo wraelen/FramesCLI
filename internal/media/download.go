@@ -119,8 +119,8 @@ func DownloadVideo(rawURL string, opts DownloadOptions) (*DownloadResult, error)
 		opts.CacheDir = filepath.Join(homeDir, ".cache", "framescli", "videos")
 	}
 
-	// Create cache directory if it doesn't exist
-	if err := os.MkdirAll(opts.CacheDir, 0755); err != nil {
+	// Create cache directory if it doesn't exist (0700 = user-only access for privacy)
+	if err := os.MkdirAll(opts.CacheDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create cache directory: %w", err)
 	}
 
@@ -181,11 +181,19 @@ func DownloadVideo(rawURL string, opts DownloadOptions) (*DownloadResult, error)
 	metadata.Title, _ = rawMeta["title"].(string)
 	metadata.Uploader, _ = rawMeta["uploader"].(string)
 	metadata.Duration, _ = rawMeta["duration"].(float64)
-	metadata.Width, _ = rawMeta["width"].(int)
-	metadata.Height, _ = rawMeta["height"].(int)
 	metadata.OriginalURL = rawURL
-	metadata.Timestamp, _ = rawMeta["timestamp"].(int64)
 	metadata.Format, _ = rawMeta["format"].(string)
+
+	// yt-dlp returns numbers as float64, need to convert to int
+	if width, ok := rawMeta["width"].(float64); ok {
+		metadata.Width = int(width)
+	}
+	if height, ok := rawMeta["height"].(float64); ok {
+		metadata.Height = int(height)
+	}
+	if timestamp, ok := rawMeta["timestamp"].(float64); ok {
+		metadata.Timestamp = int64(timestamp)
+	}
 
 	// Filesize might be in different fields
 	if filesize, ok := rawMeta["filesize"].(float64); ok {
@@ -228,7 +236,7 @@ func DownloadVideo(rawURL string, opts DownloadOptions) (*DownloadResult, error)
 		LocalPath:  cachedPath,
 		Metadata:   metadata,
 		WasCached:  false,
-		DownloadMS: 0, // TODO: track download time
+		DownloadMS: 0,
 	}, nil
 }
 
