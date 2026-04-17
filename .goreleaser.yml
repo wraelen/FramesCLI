@@ -52,7 +52,12 @@ brews:
     repository:
       owner: wraelen
       name: homebrew-tap
-      token: "{{ .Env.GITHUB_TOKEN }}"
+      # HOMEBREW_TAP_TOKEN is a Personal Access Token with `contents:write`
+      # scope on the wraelen/homebrew-tap repository. The default
+      # GITHUB_TOKEN provided by the Release workflow only has access to the
+      # current repository, so it cannot push to a separate tap repo. Falls
+      # back to GITHUB_TOKEN for local goreleaser snapshots.
+      token: "{{ if index .Env \"HOMEBREW_TAP_TOKEN\" }}{{ .Env.HOMEBREW_TAP_TOKEN }}{{ else }}{{ .Env.GITHUB_TOKEN }}{{ end }}"
 
     homepage: "https://github.com/wraelen/framescli"
     description: "Extract video frames and transcripts for AI analysis. Let AI agents watch videos."

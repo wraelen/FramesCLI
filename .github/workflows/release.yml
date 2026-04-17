@@ -38,3 +38,9 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # HOMEBREW_TAP_TOKEN is a Personal Access Token with contents:write
+          # on wraelen/homebrew-tap. The default GITHUB_TOKEN cannot push to
+          # a different repo. Without this secret the formula bump step
+          # 403s, the release fails, and the formula must be bumped by hand
+          # against wraelen/homebrew-tap.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
