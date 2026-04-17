@@ -42,6 +42,11 @@ type ExtractMediaOptions struct {
 	ExtractAudio bool
 	ProgressFn   func(percent float64)
 	Verbose      bool
+	// Force re-extracts frames and audio even if matching artifacts exist on
+	// disk. When false (default), ExtractMedia auto-skips work that has
+	// already been completed and reports the skip via SkippedFrames /
+	// SkippedAudio on the result.
+	Force        bool
 	StartTime    string
 	EndTime      string
 	StartFrame   int
@@ -74,6 +79,12 @@ type ExtractMediaResult struct {
 	FramesZipPath string
 	CSVPath       string
 	VideoInfo     VideoInfo
+	// SkippedFrames is the number of pre-existing frames that resume mode
+	// preserved instead of re-extracting. Zero when --force was used.
+	SkippedFrames int
+	// SkippedAudio reports whether audio extraction was skipped because the
+	// expected audio file already existed on disk.
+	SkippedAudio bool
 }
 
 type RunMetadata struct {
@@ -160,6 +171,48 @@ func NormalizeVideoPath(input string) string {
 		return "/mnt/" + drive + "/" + strings.TrimLeft(rest, "/")
 	}
 	return input
+}
+
+// evaluateResumeState looks at the planned extraction outputs and decides
+// whether ffmpeg invocation can be skipped because matching artifacts already
+// exist on disk. It is conservative: when --force is set, when no frames
+// exist, or when audio is requested but the audio file is missing, it returns
+// (0, false, false) and ffmpeg runs normally.
+//
+// Returns (skippedFrames, skippedAudio, skipFFmpeg).
+func evaluateResumeState(opts ExtractMediaOptions, imagesDir, audioPath, frameFormat string, durationSec float64) (int, bool, bool) {
+	if opts.Force {
+		return 0, false, false
+	}
+	matches, _ := filepath.Glob(filepath.Join(imagesDir, "frame-*."+frameFormat))
+	frameCount := len(matches)
+	if frameCount == 0 {
+		return 0, false, false
+	}
+	// Heuristic: if user gave a frame range, don't second-guess them.
+	if opts.StartFrame > 0 || opts.EndFrame > 0 || opts.EveryNFrames > 0 {
+		return 0, false, false
+	}
+	// Compare frame count against the FPS×duration estimate. Allow ±2 frames
+	// of slack because ffmpeg's exact output count depends on PTS rounding.
+	expected := int(math.Round(opts.FPS * durationSec))
+	if expected <= 0 {
+		return 0, false, false
+	}
+	if frameCount < expected-2 || frameCount > expected+2 {
+		return 0, false, false
+	}
+	audioOK := true
+	if opts.ExtractAudio {
+		if info, err := os.Stat(audioPath); err != nil || info.Size() == 0 {
+			audioOK = false
+		}
+	}
+	if !audioOK {
+		return frameCount, false, false
+	}
+	skippedAudio := opts.ExtractAudio
+	return frameCount, skippedAudio, true
 }
 
 func ExtractMedia(opts ExtractMediaOptions) (*ExtractMediaResult, error) {
@@ -261,7 +314,7 @@ func ExtractMedia(opts ExtractMediaOptions) (*ExtractMediaResult, error) {
 	if frameFormat == "jpg" {
 		args = append(args, "-q:v", strconv.Itoa(opts.JPGQuality))
 	}
-	args = append(args, "-vsync", "vfr", framePattern)
+	args = append(args, "-fps_mode", "vfr", framePattern)
 
 	if opts.ExtractAudio {
 		args = append(args, "-map", "0:a:0?", "-vn")
@@ -289,7 +342,21 @@ func ExtractMedia(opts ExtractMediaOptions) (*ExtractMediaResult, error) {
 	if closer != nil {
 		defer closer()
 	}
-	if err := runFFmpeg(opts.Context, args, durationSec, opts.ProgressFn, opts.Verbose, logWriter); err != nil {
+
+	skippedFrames, skippedAudio, ffmpegSkipped := evaluateResumeState(opts, imagesDir, audioPath, frameFormat, durationSec)
+	if ffmpegSkipped {
+		usedHWAccel = "none"
+		if skippedFrames > 0 && skippedAudio {
+			warnings = append(warnings, fmt.Sprintf("resumed: %d frames + audio already on disk; skipped ffmpeg (use --force to re-extract)", skippedFrames))
+		} else if skippedFrames > 0 {
+			warnings = append(warnings, fmt.Sprintf("resumed: %d frames already on disk; skipped ffmpeg (use --force to re-extract)", skippedFrames))
+		} else if skippedAudio {
+			warnings = append(warnings, "resumed: audio already on disk; skipped ffmpeg (use --force to re-extract)")
+		}
+		if opts.ProgressFn != nil {
+			opts.ProgressFn(100)
+		}
+	} else if err := runFFmpeg(opts.Context, args, durationSec, opts.ProgressFn, opts.Verbose, logWriter); err != nil {
 		shouldFallback := hwaccel != "none"
 		if !shouldFallback {
 			return nil, err
@@ -308,7 +375,7 @@ func ExtractMedia(opts ExtractMediaOptions) (*ExtractMediaResult, error) {
 		if frameFormat == "jpg" {
 			cpuArgs = append(cpuArgs, "-q:v", strconv.Itoa(opts.JPGQuality))
 		}
-		cpuArgs = append(cpuArgs, "-vsync", "vfr", framePattern)
+		cpuArgs = append(cpuArgs, "-fps_mode", "vfr", framePattern)
 		if opts.ExtractAudio {
 			cpuArgs = append(cpuArgs, "-map", "0:a:0?", "-vn")
 			if opts.Normalize {
@@ -393,6 +460,8 @@ func ExtractMedia(opts ExtractMediaOptions) (*ExtractMediaResult, error) {
 		FramesZipPath: zipPath,
 		CSVPath:       csvPath,
 		VideoInfo:     videoInfo,
+		SkippedFrames: skippedFrames,
+		SkippedAudio:  skippedAudio,
 	}, nil
 }
 
@@ -515,6 +584,9 @@ type TranscribeOptions struct {
 	ChunkDurationSec int
 	TimeoutSec       int
 	Verbose          bool
+	// ProgressFn receives stage updates ("downloading model", "chunk 3/12") and
+	// percent in [0,1]. Pass -1 percent for indeterminate stages.
+	ProgressFn func(stage string, percent float64)
 }
 
 type ErrTranscribeTimeout struct {
@@ -1297,6 +1369,14 @@ func ProbeVideoInfo(videoPath string) (VideoInfo, error) {
 		return VideoInfo{}, err
 	}
 	videoPath = absVideoPath
+	if info, err := os.Stat(videoPath); err != nil {
+		if os.IsNotExist(err) {
+			return VideoInfo{}, fmt.Errorf("file not found: %s", videoPath)
+		}
+		return VideoInfo{}, fmt.Errorf("cannot access video: %w", err)
+	} else if info.IsDir() {
+		return VideoInfo{}, fmt.Errorf("path is a directory, expected a video file: %s", videoPath)
+	}
 	args := []string{
 		"-v", "error",
 		"-show_entries", "format=duration:stream=codec_type,width,height,r_frame_rate",

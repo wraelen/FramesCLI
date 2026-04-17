@@ -186,9 +186,13 @@ func transcribeAudioChunked(opts TranscribeOptions) (TranscribeResult, error) {
 		defer cancel()
 	}
 
+	totalChunks := len(manifest.Chunks)
 	for i := range manifest.Chunks {
 		chunk := &manifest.Chunks[i]
 		if chunk.Status == transcriptionChunkCompleted && chunkOutputsExist(*chunk) {
+			if opts.ProgressFn != nil {
+				opts.ProgressFn(fmt.Sprintf("chunk %d/%d (cached)", i+1, totalChunks), float64(i+1)/float64(totalChunks))
+			}
 			continue
 		}
 		if chunk.Status == transcriptionChunkCompleted && !chunkOutputsExist(*chunk) {
@@ -198,6 +202,9 @@ func transcribeAudioChunked(opts TranscribeOptions) (TranscribeResult, error) {
 
 		chunk.Status = transcriptionChunkInProgress
 		chunk.LastError = ""
+		if opts.ProgressFn != nil {
+			opts.ProgressFn(fmt.Sprintf("chunk %d/%d", i+1, totalChunks), float64(i)/float64(totalChunks))
+		}
 		if err := os.MkdirAll(chunk.OutputDir, 0o755); err != nil {
 			return transcriptionResultFromManifest(manifestPath, manifest), wrapTranscriptionManifestError(err, manifestPath)
 		}

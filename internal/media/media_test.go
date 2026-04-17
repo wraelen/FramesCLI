@@ -2,6 +2,7 @@ package media
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,4 +174,73 @@ func writeFakeExe(path string) error {
 		return err
 	}
 	return nil
+}
+
+func TestEvaluateResumeStateForceBypasses(t *testing.T) {
+	dir := t.TempDir()
+	for i := 1; i <= 5; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("frame-%04d.png", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts := ExtractMediaOptions{Force: true, FPS: 1}
+	frames, audio, skip := evaluateResumeState(opts, dir, "", "png", 5)
+	if frames != 0 || audio || skip {
+		t.Fatalf("force should disable resume, got frames=%d audio=%v skip=%v", frames, audio, skip)
+	}
+}
+
+func TestEvaluateResumeStateMatchingFramesSkips(t *testing.T) {
+	dir := t.TempDir()
+	for i := 1; i <= 10; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("frame-%04d.png", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts := ExtractMediaOptions{FPS: 1}
+	frames, audio, skip := evaluateResumeState(opts, dir, "", "png", 10)
+	if frames != 10 {
+		t.Fatalf("want 10 existing frames, got %d", frames)
+	}
+	if audio {
+		t.Fatalf("audio not requested, expected false")
+	}
+	if !skip {
+		t.Fatalf("expected ffmpeg skip when frames match expected count")
+	}
+}
+
+func TestEvaluateResumeStateMissingAudioRunsFFmpeg(t *testing.T) {
+	dir := t.TempDir()
+	for i := 1; i <= 10; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("frame-%04d.png", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts := ExtractMediaOptions{FPS: 1, ExtractAudio: true}
+	missingAudio := filepath.Join(dir, "voice.wav")
+	frames, audio, skip := evaluateResumeState(opts, dir, missingAudio, "png", 10)
+	if skip {
+		t.Fatalf("audio required but missing — must run ffmpeg, got skip=true")
+	}
+	if frames != 10 {
+		t.Fatalf("want 10 frames, got %d", frames)
+	}
+	if audio {
+		t.Fatalf("audio file missing, expected audio=false")
+	}
+}
+
+func TestEvaluateResumeStateFrameCountMismatchRunsFFmpeg(t *testing.T) {
+	dir := t.TempDir()
+	for i := 1; i <= 3; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("frame-%04d.png", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts := ExtractMediaOptions{FPS: 1}
+	_, _, skip := evaluateResumeState(opts, dir, "", "png", 10)
+	if skip {
+		t.Fatalf("3 frames vs expected 10 should not be considered complete")
+	}
 }

@@ -734,6 +734,8 @@ func TestClassifyError(t *testing.T) {
 		{name: "unsupported", err: errors.New(`unsupported audio format "flac" (use wav|mp3|aac)`), wantClass: "unsupported_media", retryable: false},
 		{name: "probe_failed", err: errors.New(`video probe failed: ffprobe failed for "/tmp/bad.mp4": exit status 1`), wantClass: "unsupported_media", retryable: false},
 		{name: "invalid_video_input_wrapped_probe", err: errors.New(`invalid video input "/tmp/bad.mp4": ffprobe failed for "/tmp/bad.mp4": exit status 1`), wantClass: "unsupported_media", retryable: false},
+		{name: "file_not_found", err: errors.New(`file not found: /tmp/missing.mp4`), wantClass: "file_not_found", retryable: false},
+		{name: "path_is_directory", err: errors.New(`path is a directory, expected a video file: /tmp`), wantClass: "file_not_found", retryable: false},
 		{name: "invalid", err: errors.New("transcribe_run requires run_dir"), wantClass: "invalid_input", retryable: false},
 		{name: "path", err: errors.New("path outside allowed roots: /tmp/nope"), wantClass: "path_not_allowed", retryable: false},
 		{name: "not_found", err: errors.New("no runs found in /tmp/frames"), wantClass: "not_found", retryable: false},
@@ -1215,5 +1217,90 @@ func TestPromptYesNoHonorsDefault(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("\n"))
 	if !promptYesNo(reader, "Save", true) {
 		t.Fatalf("expected default yes")
+	}
+}
+
+func TestFFmpegSupportsHWAccel(t *testing.T) {
+	cases := []struct {
+		name      string
+		available []string
+		want      string
+		expected  bool
+	}{
+		{"empty want returns true", []string{"vdpau"}, "", true},
+		{"none want returns true", []string{"vdpau"}, "none", true},
+		{"auto want returns true", []string{"vdpau"}, "auto", true},
+		{"match exact", []string{"vdpau", "cuda"}, "cuda", true},
+		{"match case insensitive", []string{"CUDA"}, "cuda", true},
+		{"no match — common static ffmpeg", []string{"vdpau"}, "cuda", false},
+		{"empty available", []string{}, "cuda", false},
+		{"vaapi present", []string{"vaapi", "qsv"}, "vaapi", true},
+		{"qsv missing", []string{"vdpau"}, "qsv", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ffmpegSupportsHWAccel(tc.available, tc.want)
+			if got != tc.expected {
+				t.Fatalf("ffmpegSupportsHWAccel(%v, %q) = %v, want %v", tc.available, tc.want, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestLooksLikeURL(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"https://youtu.be/abc", true},
+		{"http://example.com/video.mp4", true},
+		{"HTTPS://YOUTUBE.COM/watch?v=x", true},
+		{"  https://leading-space.com  ", true},
+		{"/local/path/video.mp4", false},
+		{"", false},
+		{"recent", false},
+		{"C:\\Users\\foo\\bar.mp4", false},
+		{"ftp://nope.com", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := looksLikeURL(tc.in); got != tc.want {
+				t.Fatalf("looksLikeURL(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExistingTranscriptArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	if _, _, ok := existingTranscriptArtifacts(dir); ok {
+		t.Fatal("empty dir should not report existing transcripts")
+	}
+
+	txt := filepath.Join(dir, "transcript.txt")
+	jsn := filepath.Join(dir, "transcript.json")
+	if err := os.WriteFile(txt, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := existingTranscriptArtifacts(dir); ok {
+		t.Fatal("only txt present should not count as complete")
+	}
+	if err := os.WriteFile(jsn, []byte(`{"text":"hello"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gotTxt, gotJSON, ok := existingTranscriptArtifacts(dir)
+	if !ok {
+		t.Fatal("both files should report existing transcripts")
+	}
+	if gotTxt != txt || gotJSON != jsn {
+		t.Fatalf("returned wrong paths: %q / %q", gotTxt, gotJSON)
+	}
+
+	// Empty file should not count
+	if err := os.WriteFile(txt, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := existingTranscriptArtifacts(dir); ok {
+		t.Fatal("empty txt should disqualify the pair")
 	}
 }

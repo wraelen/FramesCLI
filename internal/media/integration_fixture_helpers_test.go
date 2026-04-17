@@ -154,7 +154,7 @@ func makeVFRVideo(t *testing.T) string {
 		"-i", listPath,
 		"-f", "lavfi",
 		"-i", "sine=frequency=880:sample_rate=16000:duration=1.4",
-		"-vsync", "vfr",
+		"-fps_mode", "vfr",
 		"-pix_fmt", "yuv420p",
 		"-c:v", "libx264",
 		"-c:a", "aac",

@@ -124,6 +124,95 @@ func formatClockDuration(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", m, s)
 }
 
+func printTranscribeHeader(backend, model string, chunkSec int, durationSec float64, hasGPU bool) {
+	backend = strings.TrimSpace(backend)
+	if backend == "" {
+		backend = "auto"
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = "base"
+	}
+	speedHint := "may take several minutes on CPU"
+	if hasGPU {
+		speedHint = "GPU detected — typically ~10x realtime"
+	}
+	fmt.Printf("  transcribe: starting (%s)\n", speedHint)
+	fmt.Printf("    backend=%s · model=%s", backend, model)
+	if chunkSec > 0 && durationSec > 0 {
+		chunks := int(math.Ceil(durationSec / float64(chunkSec)))
+		if chunks > 0 {
+			fmt.Printf(" · chunks=%d (~%ds each)", chunks, chunkSec)
+		}
+	}
+	fmt.Println()
+	if !hasGPU {
+		whisperPath, _ := exec.LookPath("whisper")
+		fasterWhisperPath, _ := exec.LookPath("faster-whisper")
+		if whisperPath != "" && fasterWhisperPath == "" {
+			fmt.Println("    tip: install faster-whisper for 3-5x speedup on CPU (pip install faster-whisper)")
+		}
+	}
+}
+
+type transcribeProgressRenderer struct {
+	label string
+	mu    sync.Mutex
+	stage string
+	pct   float64
+}
+
+func newTranscribeProgressRenderer(label string) *transcribeProgressRenderer {
+	return &transcribeProgressRenderer{label: label, stage: "starting"}
+}
+
+// run executes fn while animating a spinner with progress updates from the
+// callback. Only one goroutine writes to stdout, so spinner ticks and progress
+// updates never collide. The callback is goroutine-safe and idempotent.
+func (r *transcribeProgressRenderer) run(fn func(progressFn func(stage string, pct float64)) error) error {
+	spinner := []rune{'|', '/', '-', '\\'}
+	done := make(chan struct{})
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	progressFn := func(stage string, pct float64) {
+		r.mu.Lock()
+		r.stage = stage
+		if pct >= 0 {
+			r.pct = pct
+		}
+		r.mu.Unlock()
+	}
+
+	var runErr error
+	go func() {
+		runErr = fn(progressFn)
+		close(done)
+	}()
+
+	i := 0
+	for {
+		select {
+		case <-done:
+			r.mu.Lock()
+			finalStage := r.stage
+			r.mu.Unlock()
+			if runErr == nil {
+				fmt.Printf("\r%s [ok] %s                              \n", r.label, finalStage)
+			} else {
+				fmt.Printf("\r%s [x] failed                              \n", r.label)
+			}
+			return runErr
+		case <-ticker.C:
+			r.mu.Lock()
+			stage, pct := r.stage, r.pct
+			r.mu.Unlock()
+			fmt.Printf("\r%s [%c] %s (%.0f%%)         ", r.label, spinner[i%len(spinner)], stage, pct*100)
+			i++
+		}
+	}
+}
+
 func runSpinner(label string, fn func() error) error {
 	spinner := []rune{'|', '/', '-', '\\'}
 	done := make(chan struct{})
@@ -162,11 +251,18 @@ func main() {
 	appCfg = cfg
 	appconfig.ApplyEnvDefaults(appCfg)
 
-	// Auto-detect GPU and set hwaccel if not explicitly configured
+	// Auto-detect GPU and set hwaccel if not explicitly configured. Only
+	// recommend a GPU accel that the local ffmpeg can actually use — many
+	// static ffmpeg builds (including the johnvansickle build commonly used
+	// on Linux) lack CUDA/NVENC, so blindly setting hwaccel=cuda would just
+	// trigger the "cuda failed; falling back to CPU" warning on every run.
 	if appCfg.HWAccel == "" || appCfg.HWAccel == "none" {
 		gpu := detectGPU()
 		if gpu.Available {
-			appCfg.HWAccel = gpu.RecommendedHWAccel
+			ffmpegAccels, _ := media.FFmpegHWAccels()
+			if ffmpegSupportsHWAccel(ffmpegAccels, gpu.RecommendedHWAccel) {
+				appCfg.HWAccel = gpu.RecommendedHWAccel
+			}
 		}
 	}
 
@@ -174,7 +270,9 @@ func main() {
 		Use:          "framescli",
 		Short:        "FramesCLI - extract frame timelines from coding recordings",
 		SilenceUsage: true,
+		Version:      versionString(),
 	}
+	root.SetVersionTemplate("framescli {{.Version}}\n")
 
 	root.AddCommand(extractCommand())
 	root.AddCommand(extractBatchCommand())
@@ -251,6 +349,7 @@ type extractWorkflowOptions struct {
 	AllowExpensive     bool
 	PostHook           string
 	PostHookTimeout    time.Duration
+	Force              bool
 }
 
 type extractWorkflowResult struct {
@@ -372,6 +471,77 @@ type telemetryEvent struct {
 
 const automationSchemaVersion = "framescli.v1"
 
+// version, commit, and date are populated by goreleaser via -ldflags at build
+// time. Default values reflect "built from source without ldflags" (typical
+// `go build` or `make build`).
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+func versionString() string {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		v = "dev"
+	}
+	if commit != "none" && commit != "" {
+		short := commit
+		if len(short) > 7 {
+			short = short[:7]
+		}
+		v = v + " (" + short + ")"
+	}
+	return v
+}
+
+// existingTranscriptArtifacts reports whether a usable transcript pair already
+// exists in voiceDir. Returns the txt path, json path, and true when both
+// files are present and non-empty so the caller can short-circuit re-running
+// whisper. The file naming follows the convention used by media.TranscribeAudio
+// (transcript.txt + transcript.json, or voice.txt + voice.json depending on
+// backend output).
+func existingTranscriptArtifacts(voiceDir string) (string, string, bool) {
+	candidatePairs := [][2]string{
+		{filepath.Join(voiceDir, "transcript.txt"), filepath.Join(voiceDir, "transcript.json")},
+		{filepath.Join(voiceDir, "voice.txt"), filepath.Join(voiceDir, "voice.json")},
+	}
+	for _, pair := range candidatePairs {
+		txtInfo, err1 := os.Stat(pair[0])
+		jsonInfo, err2 := os.Stat(pair[1])
+		if err1 == nil && err2 == nil && txtInfo.Size() > 0 && jsonInfo.Size() > 0 {
+			return pair[0], pair[1], true
+		}
+	}
+	return "", "", false
+}
+
+// ffmpegSupportsHWAccel reports whether ffmpeg's reported hwaccel list
+// contains the requested accel. Used by doctor to flag the (common!)
+// situation where a GPU is present but the local ffmpeg build was compiled
+// without GPU support, so any --hwaccel cuda call would fall back to CPU.
+func ffmpegSupportsHWAccel(available []string, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	if want == "" || want == "none" || want == "auto" {
+		return true
+	}
+	for _, hw := range available {
+		if strings.EqualFold(strings.TrimSpace(hw), want) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeURL(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return false
+	}
+	lower := strings.ToLower(t)
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+}
+
 type errorDetails struct {
 	Class     string         `json:"class,omitempty"`
 	Message   string         `json:"message"`
@@ -427,6 +597,10 @@ func classifyError(err error) errorDetails {
 		details.Class = "missing_dependency"
 		details.Recovery = "Install the missing dependency, confirm it is on PATH, then retry."
 		details.Retryable = true
+	case strings.Contains(lower, "file not found:"),
+		strings.Contains(lower, "path is a directory"):
+		details.Class = "file_not_found"
+		details.Recovery = "Check the path is correct, or use 'recent' for the most recently modified video in your input dirs."
 	case strings.Contains(lower, "unsupported"),
 		strings.Contains(lower, "ffprobe failed for"),
 		strings.Contains(lower, "video probe failed"),
@@ -730,6 +904,12 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 	}
 	videoInfo, err := media.ProbeVideoInfo(videoPath)
 	if err != nil {
+		// File-not-found errors already say "file not found: <path>" — don't
+		// wrap them in "invalid video input" since that obscures the real
+		// problem.
+		if strings.HasPrefix(err.Error(), "file not found:") || strings.HasPrefix(err.Error(), "path is a directory") {
+			return result, err
+		}
 		return result, fmt.Errorf("invalid video input %q: %w", videoPath, err)
 	}
 	resolved := resolveWorkflowSettings(videoInfo, fps, opts.FrameFormat, opts.Preset, opts.FPSExplicit, opts.FormatExplicit, opts.PresetExplicit, opts.Voice, opts.ChunkDurationSec, opts.ChunkExplicit)
@@ -823,6 +1003,7 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		SourceType:   sourceType,
 		SourceURL:    sourceURL,
 		SourceTitle:  sourceTitle,
+		Force:        opts.Force,
 	})
 	if err != nil {
 		if interactive && !opts.Verbose {
@@ -912,6 +1093,20 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		if extractResult.AudioPath == "" {
 			return result, fmt.Errorf("voice extraction did not produce audio output")
 		}
+		if !opts.Force {
+			if existingTxt, existingJSON, ok := existingTranscriptArtifacts(voiceDir); ok {
+				transcriptTxt = existingTxt
+				transcriptJSON = existingJSON
+				if interactive {
+					fmt.Printf("  transcribe: skipped (transcript already exists, use --force to re-run)\n")
+				}
+				result.Warnings = append(result.Warnings, "resumed: transcript already on disk; skipped whisper")
+				goto transcriptDone
+			}
+		}
+		if interactive {
+			printTranscribeHeader(opts.TranscribeBackend, opts.TranscribeModel, resolved.ChunkDurationSec, videoInfo.DurationSec, doctorHasGPU())
+		}
 		if interactive && opts.Verbose {
 			transcriptTxt, transcriptJSON, err = media.TranscribeAudioWithOptions(media.TranscribeOptions{
 				Context:          ctx,
@@ -924,12 +1119,16 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 				ChunkDurationSec: resolved.ChunkDurationSec,
 				TimeoutSec:       opts.TranscribeTimeout,
 				Verbose:          true,
+				ProgressFn: func(stage string, pct float64) {
+					fmt.Printf("  transcribe: %s (%.0f%%)\n", stage, pct*100)
+				},
 			})
 		} else if interactive {
 			progressTracker.render("transcribing voice", 88)
-			err = runSpinner("  transcribe", func() error {
-				var spinnerErr error
-				transcriptTxt, transcriptJSON, spinnerErr = media.TranscribeAudioWithOptions(media.TranscribeOptions{
+			renderer := newTranscribeProgressRenderer("  transcribe")
+			err = renderer.run(func(progressFn func(stage string, pct float64)) error {
+				var innerErr error
+				transcriptTxt, transcriptJSON, innerErr = media.TranscribeAudioWithOptions(media.TranscribeOptions{
 					Context:          ctx,
 					AudioPath:        extractResult.AudioPath,
 					OutDir:           voiceDir,
@@ -940,8 +1139,9 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 					ChunkDurationSec: resolved.ChunkDurationSec,
 					TimeoutSec:       opts.TranscribeTimeout,
 					Verbose:          false,
+					ProgressFn:       progressFn,
 				})
-				return spinnerErr
+				return innerErr
 			})
 		} else {
 			transcriptTxt, transcriptJSON, err = media.TranscribeAudioWithOptions(media.TranscribeOptions{
@@ -982,6 +1182,7 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 			progressTracker.render("transcription complete", 98)
 			fmt.Println("")
 		}
+	transcriptDone:
 	}
 	result.TranscriptTxt = transcriptTxt
 	result.TranscriptJSON = transcriptJSON
@@ -1534,6 +1735,14 @@ func extractCommand() *cobra.Command {
 				videoInput = args[0]
 			}
 
+			// Auto-route: if positional arg is a URL, treat it as --url
+			if !hasURL && hasPath && looksLikeURL(videoInput) {
+				fmt.Printf("Detected URL — downloading via yt-dlp...\n")
+				urlFlag = videoInput
+				hasURL = true
+				hasPath = false
+			}
+
 			fpsSpec, _ := cmd.Flags().GetString("fps")
 			fpsExplicit := cmd.Flags().Changed("fps")
 			// FPS can be second arg only if first arg is video path (not when using --url)
@@ -1586,6 +1795,7 @@ func extractCommand() *cobra.Command {
 			postHookTimeout, _ := cmd.Flags().GetDuration("post-hook-timeout")
 			jsonOut, _ := cmd.Flags().GetBool("json")
 			noCache, _ := cmd.Flags().GetBool("no-cache")
+			force, _ := cmd.Flags().GetBool("force")
 			if !cmd.Flags().Changed("hwaccel") {
 				hwaccel = appCfg.HWAccel
 			}
@@ -1631,6 +1841,7 @@ func extractCommand() *cobra.Command {
 				AllowExpensive:     allowExpensive,
 				PostHook:           postHook,
 				PostHookTimeout:    postHookTimeout,
+				Force:              force,
 			}
 			if jsonOut {
 				started := time.Now()
@@ -1756,6 +1967,7 @@ func extractCommand() *cobra.Command {
 	cmd.Flags().Bool("allow-expensive", false, "Allow workloads that exceed long-input guardrails")
 	cmd.Flags().String("post-hook", "", "Run command after successful extraction (overrides config post_extract_hook)")
 	cmd.Flags().Duration("post-hook-timeout", 0, "Post-hook timeout (e.g. 30s, 2m)")
+	cmd.Flags().Bool("force", false, "Re-extract frames/audio even if matching artifacts already exist in --out")
 	cmd.Flags().Bool("json", false, "Output machine-readable JSON")
 	return cmd
 }
@@ -4602,6 +4814,10 @@ func printDoctorReport(r doctorReport) {
 	if r.GPU.Available {
 		fmt.Printf("GPU:               %s (%s)\n", r.GPU.Model, r.GPU.Vendor)
 		fmt.Printf("Recommended:       hwaccel=%s\n", r.GPU.RecommendedHWAccel)
+		if !ffmpegSupportsHWAccel(r.FFmpegHWAccels, r.GPU.RecommendedHWAccel) && r.GPU.RecommendedHWAccel != "none" {
+			fmt.Printf("⚠ Note:            your ffmpeg lacks %s support — extractions will fall back to CPU.\n", r.GPU.RecommendedHWAccel)
+			fmt.Printf("                   Install a full-featured ffmpeg build (e.g. brew install ffmpeg or apt install ffmpeg) to use GPU.\n")
+		}
 	} else {
 		fmt.Printf("GPU:               none detected\n")
 		fmt.Printf("Mode:              CPU-only\n")
@@ -4646,18 +4862,23 @@ func printDoctorReport(r doctorReport) {
 	// Show recommendations based on detected hardware and config
 	recommendations := []string{}
 
-	// GPU recommendations
-	if r.GPU.Available {
+	// GPU recommendations — only suggest enabling hwaccel if the local
+	// ffmpeg actually supports the recommended accel. Otherwise the
+	// suggestion contradicts the warning printed under Hardware.
+	ffmpegCanGPU := ffmpegSupportsHWAccel(r.FFmpegHWAccels, r.GPU.RecommendedHWAccel)
+	if r.GPU.Available && ffmpegCanGPU {
 		currentHWAccel := strings.ToLower(strings.TrimSpace(r.Config.HWAccel))
 		if currentHWAccel == "none" || currentHWAccel == "" {
 			recommendations = append(recommendations,
-				fmt.Sprintf("Enable GPU acceleration: framescli prefs set hwaccel %s", r.GPU.RecommendedHWAccel))
+				fmt.Sprintf("Enable GPU acceleration: framescli setup --non-interactive --hwaccel %s", r.GPU.RecommendedHWAccel))
 			recommendations = append(recommendations,
 				fmt.Sprintf("Or add --hwaccel %s to extract commands for 10-30x faster extraction", r.GPU.RecommendedHWAccel))
 		} else if currentHWAccel == "auto" {
 			recommendations = append(recommendations,
-				fmt.Sprintf("Consider setting specific hwaccel mode for best performance: framescli prefs set hwaccel %s", r.GPU.RecommendedHWAccel))
+				fmt.Sprintf("Consider setting specific hwaccel mode for best performance: framescli setup --non-interactive --hwaccel %s", r.GPU.RecommendedHWAccel))
 		}
+	}
+	if r.GPU.Available {
 
 		// Preset recommendations for GPU users
 		currentPreset := strings.ToLower(strings.TrimSpace(r.Config.PerformanceMode))
@@ -4679,7 +4900,22 @@ func printDoctorReport(r doctorReport) {
 		// Check if faster-whisper is available
 		if _, err := exec.LookPath("faster-whisper"); err == nil {
 			recommendations = append(recommendations,
-				"Faster transcription available: framescli prefs set transcribe_backend faster-whisper")
+				"Faster transcription available: framescli setup --non-interactive --transcribe-backend faster-whisper")
+		}
+	}
+
+	// CPU + whisper without faster-whisper: high-visibility hint, since
+	// faster-whisper is the single biggest CPU transcription speedup users
+	// can get.
+	if !r.GPU.Available {
+		_, whisperErr := exec.LookPath("whisper")
+		_, fasterErr := exec.LookPath("faster-whisper")
+		if whisperErr == nil && fasterErr != nil {
+			fmt.Println("")
+			fmt.Println("⚠ Performance hint")
+			fmt.Println("  You're running on CPU without faster-whisper.")
+			fmt.Println("  Install it for 3-5x faster transcription:")
+			fmt.Println("    pip install faster-whisper")
 		}
 	}
 
