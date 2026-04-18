@@ -49,6 +49,12 @@ changelog:
 
 brews:
   - name: framescli
+    # Homebrew taps expect formulae under Formula/*.rb. goreleaser v2's
+    # brews.directory default is the repo root, which silently puts the
+    # formula at /framescli.rb where brew never looks (v0.2.5 shipped binaries
+    # but `brew install` still saw v0.2.3 until Formula/ was populated by
+    # hand). Pin directory explicitly so the canonical path is always used.
+    directory: Formula
     repository:
       owner: wraelen
       name: homebrew-tap
