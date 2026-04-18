@@ -149,6 +149,52 @@ func TestResolveTranscribeBackendAndBinAutoPrefersFaster(t *testing.T) {
 	}
 }
 
+func TestTranscriptTextFromWhisperOutput(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		wantText  string
+		wantSegsN int
+	}{
+		{
+			name:      "valid json with text",
+			input:     `{"text":"hello world","segments":[{"start":0,"end":1,"text":"hello world"}],"language":"en"}`,
+			wantText:  "hello world",
+			wantSegsN: 1,
+		},
+		{
+			name:      "valid json with empty text (silent audio)",
+			input:     `{"text":"","segments":[],"language":"en"}`,
+			wantText:  "", // must NOT be the raw JSON payload
+			wantSegsN: 0,
+		},
+		{
+			name:      "valid json with whitespace-only text",
+			input:     `{"text":"   \n  ","segments":[],"language":"en"}`,
+			wantText:  "",
+			wantSegsN: 0,
+		},
+		{
+			name:      "non-json raw text fallback",
+			input:     "hello from a plain-text whisper fork\n",
+			wantText:  "hello from a plain-text whisper fork",
+			wantSegsN: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var parsed WhisperJSON
+			got := transcriptTextFromWhisperOutput([]byte(tc.input), &parsed)
+			if got != tc.wantText {
+				t.Fatalf("text: want %q, got %q", tc.wantText, got)
+			}
+			if len(parsed.Segments) != tc.wantSegsN {
+				t.Fatalf("segments: want %d, got %d", tc.wantSegsN, len(parsed.Segments))
+			}
+		})
+	}
+}
+
 func TestResolveTranscriptJSONPathFallback(t *testing.T) {
 	outDir := t.TempDir()
 	audioPath := filepath.Join(outDir, "audio.wav")

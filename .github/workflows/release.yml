@@ -44,3 +44,23 @@ jobs:
           # 403s, the release fails, and the formula must be bumped by hand
           # against wraelen/homebrew-tap.
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      # v0.2.4 shipped binaries successfully but silently left the Homebrew
+      # formula at v0.2.3 when the formula-push step failed. This step fetches
+      # the current formula from the tap and fails the workflow if its version
+      # doesn't match the tag we just pushed — so a half-shipped release can't
+      # masquerade as green.
+      - name: Verify Homebrew tap was bumped
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "Checking wraelen/homebrew-tap Formula/framescli.rb reports version ${VERSION}"
+          formula=$(curl -fsSL "https://raw.githubusercontent.com/wraelen/homebrew-tap/main/Formula/framescli.rb")
+          formula_version=$(printf '%s' "$formula" | grep -E '^\s*version\s+"' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "$formula_version" != "$VERSION" ]; then
+            echo "::error::Homebrew tap is at version '${formula_version}' but expected '${VERSION}'."
+            echo "::error::The goreleaser brew step likely failed; fix the cause and cut a new patch tag."
+            exit 1
+          fi
+          echo "Tap formula version matches tag: ${formula_version}"

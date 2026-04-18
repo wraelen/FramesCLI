@@ -424,3 +424,49 @@ func TestLoadFallsBackToLegacyPath(t *testing.T) {
 		t.Fatalf("expected legacy config to load, got %+v", cfg)
 	}
 }
+
+func TestLoadMigratesStockLegacyFramesRoot(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "cfg.json")
+	if err := os.Setenv("FRAMES_CONFIG", path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("FRAMES_CONFIG") })
+
+	raw := []byte(`{"frames_root":"frames","default_fps":4,"default_format":"png"}`)
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := defaultFramesRoot()
+	if cfg.FramesRoot != want {
+		t.Fatalf("expected stock legacy \"frames\" to migrate to %q, got %q", want, cfg.FramesRoot)
+	}
+}
+
+func TestLoadPreservesExplicitFramesRoot(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "cfg.json")
+	if err := os.Setenv("FRAMES_CONFIG", path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("FRAMES_CONFIG") })
+
+	for _, explicit := range []string{"./frames", "/var/lib/frames", "custom-dir"} {
+		raw := []byte(`{"frames_root":"` + explicit + `","default_fps":4,"default_format":"png"}`)
+		if err := os.WriteFile(path, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.FramesRoot != explicit {
+			t.Fatalf("expected explicit %q to be preserved, got %q", explicit, cfg.FramesRoot)
+		}
+	}
+}

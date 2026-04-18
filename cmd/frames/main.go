@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -63,7 +64,11 @@ func renderProgressBar(label string, percent float64) {
 		filled = width
 	}
 	bar := strings.Repeat("#", filled) + strings.Repeat("-", width-filled)
-	fmt.Printf("\r%s [%s] %6.2f%%", label, bar, percent)
+	if isStdoutTTY() {
+		fmt.Printf("\r%s [%s] %6.2f%%", label, bar, percent)
+	} else {
+		fmt.Printf("%s [%s] %6.2f%%\n", label, bar, percent)
+	}
 }
 
 func renderStageProgress(stage string, percent float64, suffix string) {
@@ -79,16 +84,31 @@ func renderStageProgress(stage string, percent float64, suffix string) {
 
 type stageProgressTracker struct {
 	started time.Time
+	// Non-TTY dedup: piped output can't use \r overwrite, so we must print each
+	// change on its own line. Without dedup, ffmpeg-driven progressFn calls at
+	// the same percent (plus explicit stage transitions that also land on
+	// percent=70/85/etc.) flood stdout with duplicate lines. Emit only when
+	// the (stage, bucketed-percent) pair changes.
+	lastStage string
+	lastPct   int
 }
 
-func newStageProgressTracker(started time.Time) stageProgressTracker {
+func newStageProgressTracker(started time.Time) *stageProgressTracker {
 	if started.IsZero() {
 		started = time.Now()
 	}
-	return stageProgressTracker{started: started}
+	return &stageProgressTracker{started: started, lastPct: -1}
 }
 
-func (t stageProgressTracker) render(stage string, percent float64) {
+func (t *stageProgressTracker) render(stage string, percent float64) {
+	if !isStdoutTTY() {
+		bucket := int(percent)
+		if stage == t.lastStage && bucket == t.lastPct {
+			return
+		}
+		t.lastStage = stage
+		t.lastPct = bucket
+	}
 	renderStageProgress(stage, percent, stageTimingSuffix(t.started, percent))
 }
 
@@ -990,7 +1010,15 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		}
 		fmt.Printf("  hwaccel: %s, preset: %s (media=%s)\n", opts.HWAccel, resolved.Preset, resolved.MediaPreset)
 		if opts.Voice {
-			fmt.Printf("  transcript chunking: %ds\n", resolved.ChunkDurationSec)
+			// Only advertise chunking when it actually kicks in. For clips that
+			// fit in one chunk (with the same overhang the transcriber uses),
+			// the single-shot path is taken and the chunk value is irrelevant.
+			willChunk := resolved.ChunkDurationSec > 0 &&
+				videoInfo.DurationSec > float64(resolved.ChunkDurationSec)*media.SingleShotChunkOverhangRatio
+			if willChunk {
+				chunks := int(math.Ceil(videoInfo.DurationSec / float64(resolved.ChunkDurationSec)))
+				fmt.Printf("  transcript chunking: %ds (%d chunks)\n", resolved.ChunkDurationSec, chunks)
+			}
 		}
 	}
 	if interactive && (strings.TrimSpace(opts.StartTime) != "" || strings.TrimSpace(opts.EndTime) != "") {
@@ -1028,6 +1056,7 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		FPS:          resolved.FPS,
 		FPSMode:      resolved.FPSMode,
 		OutDir:       opts.OutDir,
+		FramesRoot:   appCfg.FramesRoot,
 		FrameFormat:  resolved.FrameFormat,
 		JPGQuality:   opts.JPGQuality,
 		HWAccel:      opts.HWAccel,
@@ -1610,6 +1639,18 @@ func normalizeDroppedPath(input string) string {
 	return strings.TrimSpace(s)
 }
 
+// validateFrameFormatFlag rejects format values that ffmpeg can't produce via
+// our extraction pipeline before any user-visible stage header prints. The
+// media layer will reject the same values later, but at that point the user
+// has already seen "[1/4] Resolving video input" which reads as progress.
+func validateFrameFormatFlag(format string) error {
+	f := strings.ToLower(strings.TrimSpace(format))
+	if f == "" || f == "png" || f == "jpg" || f == "jpeg" {
+		return nil
+	}
+	return fmt.Errorf("unsupported --format %q: use png or jpg", format)
+}
+
 func parseExtractFPSSpec(spec string) (float64, error) {
 	spec = strings.TrimSpace(strings.ToLower(spec))
 	if spec == "" || spec == "auto" {
@@ -1846,6 +1887,10 @@ func extractCommand() *cobra.Command {
 			if !cmd.Flags().Changed("format") && appCfg.DefaultFormat != "" {
 				frameFormat = appCfg.DefaultFormat
 			}
+			if err := validateFrameFormatFlag(frameFormat); err != nil {
+				failln(err.Error())
+				return
+			}
 			jpgQuality, _ := cmd.Flags().GetInt("quality")
 			noSheet, _ := cmd.Flags().GetBool("no-sheet")
 			sheetCols, _ := cmd.Flags().GetInt("sheet-cols")
@@ -2071,6 +2116,10 @@ func extractBatchCommand() *cobra.Command {
 			frameFormat, _ := cmd.Flags().GetString("format")
 			if !cmd.Flags().Changed("format") && appCfg.DefaultFormat != "" {
 				frameFormat = appCfg.DefaultFormat
+			}
+			if err := validateFrameFormatFlag(frameFormat); err != nil {
+				failln(err.Error())
+				return
 			}
 			jpgQuality, _ := cmd.Flags().GetInt("quality")
 			noSheet, _ := cmd.Flags().GetBool("no-sheet")
@@ -3032,6 +3081,14 @@ func copyLastCommand() *cobra.Command {
 				return
 			}
 			if err := copyTextToClipboardCLI(target); err != nil {
+				if errors.Is(err, errNoClipboardTool) {
+					// Headless / server / WSL-without-clipboard: print the
+					// path so the user (or a wrapping agent) can still act on
+					// it without the command appearing to have failed.
+					fmt.Println(target)
+					fmt.Fprintln(os.Stderr, "note: no clipboard tool available; path printed to stdout")
+					return
+				}
 				failf("copy failed: %v\n", err)
 				return
 			}
@@ -3346,6 +3403,12 @@ func openPathCLI(target string) error {
 	return exec.Command("xdg-open", target).Start()
 }
 
+// errNoClipboardTool is returned when no platform clipboard binary is
+// available. Callers that can usefully fall back (e.g. copy-last printing the
+// path to stdout) should test for this sentinel rather than treating it as a
+// hard failure.
+var errNoClipboardTool = errors.New("no clipboard tool found (pbcopy/clip/wl-copy/xclip/xsel)")
+
 func copyTextToClipboardCLI(text string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -3376,7 +3439,7 @@ func copyTextToClipboardCLI(text string) error {
 		cmd.Stdin = strings.NewReader(text)
 		return cmd.Run()
 	}
-	return fmt.Errorf("no clipboard tool found (pbcopy/clip/wl-copy/xclip/xsel)")
+	return errNoClipboardTool
 }
 
 func mcpCommand() *cobra.Command {
@@ -3680,12 +3743,15 @@ func runMCPServerWithState(in io.Reader, state *mcpServerState) error {
 				result, err := callMCPTool(ctx, p.Name, p.Arguments)
 				if err != nil {
 					code := -32000
+					var invalidParams *mcpInvalidParamsError
 					if errors.Is(ctx.Err(), context.Canceled) {
 						code = -32800
 						err = errors.New("tool call cancelled")
 					} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 						code = -32001
 						err = errors.New("tool call timed out")
+					} else if errors.As(err, &invalidParams) {
+						code = -32602
 					}
 					_ = state.write(&mcpResponse{
 						JSONRPC: "2.0",
@@ -3878,6 +3944,35 @@ func handleMCPRequest(req mcpRequest) *mcpResponse {
 	}
 }
 
+// mcpInvalidParamsError wraps an argument-decoding failure so the outer
+// tools/call handler can return JSON-RPC -32602 "Invalid params" instead of
+// the generic -32000 used for tool execution errors.
+type mcpInvalidParamsError struct{ inner error }
+
+func (e *mcpInvalidParamsError) Error() string { return e.inner.Error() }
+func (e *mcpInvalidParamsError) Unwrap() error { return e.inner }
+
+// decodeMCPArgs parses a tool's arguments payload with DisallowUnknownFields,
+// so a caller that sends e.g. {"video":"..."} to a tool expecting {"input":...}
+// gets a clear -32602 error instead of a silent fallback that processes the
+// wrong file. An absent or empty argsRaw is treated as {} so tools that take
+// no parameters remain convenient to invoke.
+func decodeMCPArgs(argsRaw json.RawMessage, target any) error {
+	trimmed := bytes.TrimSpace(argsRaw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if trimmed[0] != '{' {
+		return &mcpInvalidParamsError{inner: fmt.Errorf("arguments must be a JSON object")}
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(target); err != nil {
+		return &mcpInvalidParamsError{inner: err}
+	}
+	return nil
+}
+
 func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -3886,6 +3981,10 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 	}
 	switch name {
 	case "doctor":
+		var args struct{}
+		if err := decodeMCPArgs(argsRaw, &args); err != nil {
+			return nil, err
+		}
 		started := time.Now()
 		return buildAutomationEnvelope("doctor", started, "success", collectDoctorReport(appCfg), nil), nil
 	case "preview":
@@ -3897,7 +3996,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			Preset        string  `json:"preset"`
 			ChunkDuration int     `json:"chunk_duration"`
 		}
-		_ = json.Unmarshal(argsRaw, &args)
+		if err := decodeMCPArgs(argsRaw, &args); err != nil {
+			return nil, err
+		}
 		if strings.TrimSpace(args.Input) == "" {
 			args.Input = "recent"
 		}
@@ -3943,7 +4044,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			TranscribeBin      string  `json:"transcribe_bin"`
 			TranscribeLanguage string  `json:"transcribe_language"`
 		}
-		_ = json.Unmarshal(argsRaw, &args)
+		if err := decodeMCPArgs(argsRaw, &args); err != nil {
+			return nil, err
+		}
 
 		// Validate URL vs Input mutually exclusive
 		hasURL := strings.TrimSpace(args.URL) != ""
@@ -4044,7 +4147,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			TranscribeBin      string   `json:"transcribe_bin"`
 			TranscribeLanguage string   `json:"transcribe_language"`
 		}
-		_ = json.Unmarshal(argsRaw, &args)
+		if err := decodeMCPArgs(argsRaw, &args); err != nil {
+			return nil, err
+		}
 		for _, in := range args.Inputs {
 			if err := ensureMCPGlobAllowed(in); err != nil {
 				return nil, err
@@ -4150,7 +4255,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			Root     string `json:"root"`
 			Artifact string `json:"artifact"`
 		}
-		_ = json.Unmarshal(argsRaw, &args)
+		if err := decodeMCPArgs(argsRaw, &args); err != nil {
+			return nil, err
+		}
 		if strings.TrimSpace(args.Root) == "" && strings.TrimSpace(appCfg.AgentOutputRoot) != "" {
 			args.Root = appCfg.AgentOutputRoot
 		}
@@ -4181,7 +4288,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		var args struct {
 			Root string `json:"root"`
 		}
-		_ = json.Unmarshal(argsRaw, &args)
+		if err := decodeMCPArgs(argsRaw, &args); err != nil {
+			return nil, err
+		}
 		if strings.TrimSpace(args.Root) == "" && strings.TrimSpace(appCfg.AgentOutputRoot) != "" {
 			args.Root = appCfg.AgentOutputRoot
 		}
@@ -4209,7 +4318,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			Run    string `json:"run"`
 			Recent int    `json:"recent"`
 		}
-		_ = json.Unmarshal(argsRaw, &args)
+		if err := decodeMCPArgs(argsRaw, &args); err != nil {
+			return nil, err
+		}
 		if strings.TrimSpace(args.Root) == "" && strings.TrimSpace(appCfg.AgentOutputRoot) != "" {
 			args.Root = appCfg.AgentOutputRoot
 		}
@@ -4252,7 +4363,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			RunDir        string `json:"run_dir"`
 			ChunkDuration int    `json:"chunk_duration"`
 		}
-		_ = json.Unmarshal(argsRaw, &args)
+		if err := decodeMCPArgs(argsRaw, &args); err != nil {
+			return nil, err
+		}
 		if strings.TrimSpace(args.RunDir) == "" {
 			return nil, fmt.Errorf("transcribe_run requires run_dir")
 		}
@@ -4288,7 +4401,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			InputDirs  *[]string `json:"input_dirs"`
 			OutputRoot *string   `json:"output_root"`
 		}
-		_ = json.Unmarshal(argsRaw, &args)
+		if err := decodeMCPArgs(argsRaw, &args); err != nil {
+			return nil, err
+		}
 		cfg := appCfg
 		if args.InputDirs != nil {
 			for _, p := range *args.InputDirs {

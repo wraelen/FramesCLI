@@ -156,6 +156,14 @@ func Load() (Config, error) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, err
 	}
+	// Migrate legacy stock default: older framescli versions shipped with
+	// frames_root="frames" (cwd-relative). The default moved to
+	// ~/framescli/runs so extractions don't dump GBs into whatever directory
+	// the CLI was invoked from. Users who explicitly want cwd-relative should
+	// set "./frames" or an absolute path instead.
+	if strings.TrimSpace(cfg.FramesRoot) == "frames" {
+		cfg.FramesRoot = defaultFramesRoot()
+	}
 	normalize(&cfg)
 	return cfg, nil
 }

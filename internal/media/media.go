@@ -44,11 +44,18 @@ const contactTileWidth = 420
 var obsDefaultDir = `C:\Users\wraelen\Videos\OBS`
 
 type ExtractMediaOptions struct {
-	Context      context.Context
-	VideoPath    string
-	FPS          float64
-	FPSMode      string
-	OutDir       string
+	Context   context.Context
+	VideoPath string
+	FPS       float64
+	FPSMode   string
+	// OutDir is the exact output directory for this run. When empty, the run
+	// folder is generated from time + source metadata and placed under
+	// FramesRoot (falling back to DefaultFramesRoot if FramesRoot is also
+	// empty). Callers that already know the full run path should set OutDir.
+	OutDir string
+	// FramesRoot is the parent directory under which auto-generated run
+	// folders are created when OutDir is empty. Ignored when OutDir is set.
+	FramesRoot   string
 	FrameFormat  string
 	JPGQuality   int
 	HWAccel      string
@@ -176,6 +183,20 @@ type WhisperJSON struct {
 	Segments []WhisperSegment `json:"segments"`
 }
 
+// transcriptTextFromWhisperOutput extracts the plain-text transcript body to
+// write into transcript.txt. When raw parses as whisper JSON, parsed.Text is
+// authoritative — including when it's empty (silent audio, no detected
+// speech), in which case transcript.txt should be empty rather than contain
+// the JSON blob. Only when raw is not JSON at all (some forks emit bare text)
+// do we fall back to the raw bytes. parsed is populated in-place so callers
+// can also read parsed.Segments for SRT/VTT generation.
+func transcriptTextFromWhisperOutput(raw []byte, parsed *WhisperJSON) string {
+	if err := json.Unmarshal(raw, parsed); err == nil {
+		return strings.TrimSpace(parsed.Text)
+	}
+	return strings.TrimSpace(string(raw))
+}
+
 func NormalizeVideoPath(input string) string {
 	if runtime.GOOS == "windows" {
 		return input
@@ -287,8 +308,12 @@ func ExtractMedia(opts ExtractMediaOptions) (*ExtractMediaResult, error) {
 	}
 	outDir := opts.OutDir
 	if outDir == "" {
+		root := strings.TrimSpace(opts.FramesRoot)
+		if root == "" {
+			root = DefaultFramesRoot
+		}
 		timestamp := makeRunFolderName(time.Now(), opts.SourceType, opts.SourceURL, opts.SourceTitle)
-		outDir = filepath.Join(DefaultFramesRoot, timestamp)
+		outDir = filepath.Join(root, timestamp)
 		outDir = ensureUniquePath(outDir)
 	}
 	outDir, err = filepath.Abs(outDir)
@@ -887,14 +912,8 @@ func transcribeAudioOnce(opts TranscribeOptions) (string, string, error) {
 		return "", "", err
 	}
 
-	text := ""
 	var parsed WhisperJSON
-	if err := json.Unmarshal(raw, &parsed); err == nil {
-		text = strings.TrimSpace(parsed.Text)
-	}
-	if text == "" {
-		text = strings.TrimSpace(string(raw))
-	}
+	text := transcriptTextFromWhisperOutput(raw, &parsed)
 
 	transcriptTxt := filepath.Join(outDir, "transcript.txt")
 	if err := os.WriteFile(transcriptTxt, []byte(text+"\n"), 0o644); err != nil {
