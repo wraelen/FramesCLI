@@ -294,15 +294,15 @@ func TestAutoFPSForDurationTiers(t *testing.T) {
 		duration float64
 		want     float64
 	}{
-		{0, 1},         // invalid → safe floor
-		{-1, 1},        // negative → safe floor
-		{10, 8},        // short clip → capped at 8 fps
-		{30, 8},        // 30s at 480 target → 16 clamped to 8
-		{60, 8},        // 1 min → 8 fps exact
-		{120, 4},       // 2 min → 4 fps
-		{300, 1.5},     // 5 min → 1.5 fps (rounded)
-		{600, 1},       // 10 min → floor 1 fps
-		{3600, 1},      // 1 hr → floor 1 fps
+		{0, 1},     // invalid → safe floor
+		{-1, 1},    // negative → safe floor
+		{10, 8},    // short clip → capped at 8 fps
+		{30, 8},    // 30s at 480 target → 16 clamped to 8
+		{60, 8},    // 1 min → 8 fps exact
+		{120, 4},   // 2 min → 4 fps
+		{300, 1.5}, // 5 min → 1.5 fps (rounded)
+		{600, 1},   // 10 min → floor 1 fps
+		{3600, 1},  // 1 hr → floor 1 fps
 	}
 	for _, tc := range cases {
 		got := autoFPSForDuration(tc.duration)
