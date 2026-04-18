@@ -48,7 +48,7 @@ framescli transcribe-run /abs/path/to/run --json
 - Use absolute paths whenever possible.
 - Run `doctor` first on unfamiliar machines.
 - Prefer `--transcribe-timeout <seconds>` for agent flows so transcription does not block the whole workflow indefinitely.
-- `--fps auto` or `--fps 0` targets roughly 60 frames over the whole video.
+- `--fps auto` or `--fps 0` targets ~480 frames, clamped to [1, 8] fps — dense enough for action-dense clips without exploding disk on long recordings. run.json records `fps_mode: "auto"` and CLI output prints e.g. `Target FPS: 4.00 (auto, computed from duration 120.0s)`.
 - Keep processing local; FramesCLI is designed around local files and local paths.
 
 ## Key Outputs

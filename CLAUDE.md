@@ -102,13 +102,20 @@ HWAccel modes: `none`, `auto`, `cuda`, `vaapi`, `qsv`
 
 Auto-fallback: if hwaccel fails, extraction retries with CPU-only mode and logs warning.
 
+GPU is reported per-subsystem, not as a single global bool:
+- **Hardware GPU** — `detectGPU()` / `doctorHasGPU()` — describes what silicon is on the machine. Drives extraction hwaccel recommendations.
+- **FFmpeg GPU** — `ffmpegSupportsHWAccel()` — checks whether the installed ffmpeg binary actually exposes the recommended hwaccel. Drives hwaccel messaging in doctor.
+- **Transcription GPU** — `probeTranscribeAccel(cfg, backendOverride, hwGPUPresent)` returns `{UsesGPU, Reason}`. Rule-based: openai-whisper always reports CPU (typical pip installs don't ship CUDA torch); faster-whisper reports GPU when hardware GPU is present. Drives `transcriptRealtimeRange`, `buildTranscriptPlan`, extract transcribe header, and the doctor Accel line.
+
+Never pass `doctorHasGPU()` directly into transcription speed estimates — use `probeTranscribeAccel(...).UsesGPU` so the claim matches the backend that will actually run.
+
 ### Transcription Backends
 
 - **auto**: prefers `faster-whisper` if available, falls back to `whisper`
 - **whisper**: OpenAI Whisper (slower, CPU-heavy without GPU)
 - **faster-whisper**: faster implementation, better for GPU workflows
 
-Chunked transcription: for recordings >10min, use `--chunk-duration <seconds>` to split audio into resumable chunks. Manifest tracks progress at `voice/transcription-manifest.json`.
+Chunked transcription: use `--chunk-duration <seconds>` to split long audio into resumable chunks. Manifest tracks progress at `voice/transcription-manifest.json`. Clips whose audio fits in one chunk (with 10% overhang) auto-skip the chunked pipeline and use a faster single-shot path — no manifest, no split/merge overhead. Existing manifests always resume via the chunked path regardless of duration, so interrupted long runs aren't downgraded.
 
 ### Artifact Index
 
@@ -143,7 +150,11 @@ Long-running operations accept `context.Context` for cancellation support. TUI a
 
 ### Progress Tracking
 
-Progress callbacks: `func(percent float64)` passed to `ExtractMedia` and similar functions. CLI renders progress bars, TUI updates stage indicators.
+Progress callbacks: `func(percent float64)` passed to `ExtractMedia`; `func(stage string, pct float64)` on `TranscribeOptions.ProgressFn`. CLI renders progress bars, TUI updates stage indicators.
+
+Transcription emits a per-second heartbeat (`startTranscribeHeartbeat` in `internal/media/transcribe_chunk.go`) during otherwise-quiet whisper runs. The heartbeat interpolates pct inside the current chunk's span (capped at 90% so the bar doesn't claim completion before whisper returns) and augments the stage string with elapsed time, e.g. `chunk 1/2 · 00:47 elapsed`. Passing `pct < 0` to the progress callback means "leave pct unchanged" — use it for stage-only updates.
+
+The CLI renderer (`transcribeProgressRenderer.run` in `cmd/frames/main.go`) checks `isStdoutTTY()` and switches between carriage-return animation (TTY, 200ms tick) and newline-per-change cadence (non-TTY, 5s tick) so piped output stays readable.
 
 ### Path Normalization
 

@@ -244,3 +244,142 @@ func TestEvaluateResumeStateFrameCountMismatchRunsFFmpeg(t *testing.T) {
 		t.Fatalf("3 frames vs expected 10 should not be considered complete")
 	}
 }
+
+// ---- PruneFrames tests ----
+
+func writePruneFixtureRun(t *testing.T, root, name string, modTime time.Time, sizeBytes int) string {
+	t.Helper()
+	runDir := filepath.Join(root, name)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir run: %v", err)
+	}
+	runJSON := filepath.Join(runDir, "run.json")
+	if err := os.WriteFile(runJSON, []byte(`{"fps":1}`), 0o644); err != nil {
+		t.Fatalf("write run.json: %v", err)
+	}
+	if sizeBytes > 0 {
+		payload := make([]byte, sizeBytes)
+		if err := os.WriteFile(filepath.Join(runDir, "payload.bin"), payload, 0o644); err != nil {
+			t.Fatalf("write payload: %v", err)
+		}
+	}
+	if err := os.Chtimes(runDir, modTime, modTime); err != nil {
+		t.Fatalf("chtimes run dir: %v", err)
+	}
+	return runDir
+}
+
+func TestPruneFramesOlderThan(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	recent := writePruneFixtureRun(t, root, "Run_recent", now.Add(-5*24*time.Hour), 100)
+	old := writePruneFixtureRun(t, root, "Run_old", now.Add(-60*24*time.Hour), 200)
+
+	result, err := PruneFrames(PruneFramesOptions{
+		RootDir:   root,
+		OlderThan: 30 * 24 * time.Hour,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if result.TotalRuns != 2 {
+		t.Fatalf("expected 2 total runs, got %d", result.TotalRuns)
+	}
+	if len(result.Pruned) != 1 {
+		t.Fatalf("expected 1 pruned, got %d", len(result.Pruned))
+	}
+	if result.Pruned[0].Path != old {
+		t.Fatalf("expected old dir to be pruned, got %s", result.Pruned[0].Path)
+	}
+	if _, err := os.Stat(recent); err != nil {
+		t.Fatalf("recent run must still exist: %v", err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("old run must be gone, got err=%v", err)
+	}
+}
+
+func TestPruneFramesKeepLast(t *testing.T) {
+	root := t.TempDir()
+	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	paths := []string{
+		writePruneFixtureRun(t, root, "Run_1", base.Add(-5*24*time.Hour), 10),
+		writePruneFixtureRun(t, root, "Run_2", base.Add(-4*24*time.Hour), 10),
+		writePruneFixtureRun(t, root, "Run_3", base.Add(-3*24*time.Hour), 10),
+		writePruneFixtureRun(t, root, "Run_4", base.Add(-2*24*time.Hour), 10),
+	}
+
+	result, err := PruneFrames(PruneFramesOptions{RootDir: root, KeepLast: 2, Now: base})
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if len(result.Pruned) != 2 {
+		t.Fatalf("expected 2 pruned, got %d", len(result.Pruned))
+	}
+	// Two newest (Run_3, Run_4) must still exist; two oldest (Run_1, Run_2) gone.
+	for _, p := range paths[:2] {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be pruned, got err=%v", p, err)
+		}
+	}
+	for _, p := range paths[2:] {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("expected %s to survive keep-last=2, got err=%v", p, err)
+		}
+	}
+}
+
+func TestPruneFramesDryRunDoesNotDelete(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	old := writePruneFixtureRun(t, root, "Run_old", now.Add(-100*24*time.Hour), 50)
+
+	result, err := PruneFrames(PruneFramesOptions{
+		RootDir:   root,
+		OlderThan: 30 * 24 * time.Hour,
+		DryRun:    true,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if !result.DryRun || len(result.Pruned) != 1 {
+		t.Fatalf("expected 1 dry-run candidate, got %+v", result)
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Fatalf("dry-run must not delete: %v", err)
+	}
+}
+
+func TestPruneFramesSkipsNonRunSubdirs(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+
+	// A subdir without run.json — should be ignored, not pruned.
+	stray := filepath.Join(root, "diagnostics")
+	if err := os.MkdirAll(stray, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stray, "diag.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Chtimes(stray, now.Add(-100*24*time.Hour), now.Add(-100*24*time.Hour)); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	result, err := PruneFrames(PruneFramesOptions{
+		RootDir:   root,
+		OlderThan: 30 * 24 * time.Hour,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if result.TotalRuns != 0 || len(result.Pruned) != 0 {
+		t.Fatalf("expected 0 runs considered, got %+v", result)
+	}
+	if _, err := os.Stat(stray); err != nil {
+		t.Fatalf("non-run subdir must be untouched: %v", err)
+	}
+}

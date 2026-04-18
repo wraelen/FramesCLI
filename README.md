@@ -58,7 +58,7 @@ framescli extract video.mp4 --fps 4 --voice
 
 ## What Makes This Different
 
-✅ **GPU auto-detection** — 15-30x faster on NVIDIA/AMD/Intel/Apple (zero config)
+✅ **GPU auto-detection** — 15-30x faster frame extraction on NVIDIA/AMD/Intel/Apple (transcription requires `faster-whisper` for GPU)
 ✅ **1000+ sites** — YouTube, Vimeo, Twitter, Reddit via yt-dlp
 ✅ **Local-first** — All processing on your machine, zero cloud, zero telemetry
 ✅ **MCP integration** — Works with Claude Desktop, Cursor, Cline, Windsurf
@@ -93,13 +93,16 @@ Shows detected tools (ffmpeg, yt-dlp, whisper) and GPU hardware.
 Frame extraction works immediately. For `--voice` transcription:
 
 ```bash
-brew install yt-dlp           # For URL extraction
-pip install openai-whisper    # For transcription
+brew install yt-dlp                              # For URL extraction
+
+# Recommended: faster-whisper (GPU-accelerated, 3-5x faster on CPU too)
+pip install faster-whisper
+
+# Or: openai-whisper (simpler install, runs on CPU by default even on GPU systems)
+pip install openai-whisper
 ```
 
-**Alternative:** `pip install faster-whisper` for better GPU support.
-
-FramesCLI auto-detects the best available backend.
+FramesCLI auto-detects whichever you install. `framescli doctor` shows which backend is active and whether it's reaching the GPU.
 
 ---
 
@@ -145,8 +148,10 @@ Claude automatically extracts frames, transcribes audio, and analyzes the conten
 
 ## Output Structure
 
+By default, runs land in `~/framescli/runs/` (override with `--out <path>` or `framescli setup --frames-root <path>`):
+
 ```
-frames/Run_20260415-083045/
+~/framescli/runs/Run_20260415-083045/
   images/
     frame-0001.png
     frame-0002.png
@@ -161,6 +166,18 @@ frames/Run_20260415-083045/
 ```
 
 All artifacts are JSON-parseable for automation. See [schemas](docs/schemas/) for details.
+
+### Cleaning up old runs
+
+Runs accumulate over time. `framescli doctor` shows total usage; prune with:
+
+```bash
+framescli clean --older-than 30d          # remove runs older than 30 days
+framescli clean --keep-last 10            # keep the 10 newest runs
+framescli clean --older-than 30d --dry-run # preview without deleting
+```
+
+The no-flag form (`framescli clean`) still wipes the entire frames root for backward compatibility.
 
 ---
 
@@ -185,32 +202,45 @@ framescli extract video.mp4 --preset balanced --fps 8
 
 ## GPU Acceleration
 
-FramesCLI auto-detects and uses available GPUs:
+FramesCLI auto-detects and uses available GPUs for **frame extraction**:
 
-| GPU Type | Speedup | Support |
+| GPU Type | Extraction speedup | Support |
 |----------|---------|---------|
 | **NVIDIA (CUDA)** | 15-30x | ✅ Auto-detected |
 | **Apple Silicon** | 10-20x | ✅ Auto-detected |
 | **AMD (VAAPI)** | 10-30x | ✅ Auto-detected |
 | **Intel QuickSync** | 5-15x | ✅ Auto-detected |
 
+**Transcription** acceleration is reported separately. `openai-whisper` typically runs on CPU even on GPU hardware (default pip install is CPU-only). For GPU-accelerated transcription, install `faster-whisper` with CUDA wheels: `pip install ctranslate2[cuda] faster-whisper`.
+
 Check status:
 ```bash
 framescli doctor
 ```
 
-Example output:
+Example output on a GPU system with `faster-whisper` installed:
 ```
 Hardware
 GPU:               NVIDIA GeForce RTX 3070 Ti (nvidia)
 Recommended:       hwaccel=cuda
 
 Transcription
-Backend:           faster-whisper (GPU-accelerated)
-Estimated Speed:   ~10x realtime
+Backend:           faster-whisper
+Model:             base
+Accel:             GPU
+Accel reason:      faster-whisper with GPU hardware available
+Estimated Speed:   fast
 ```
 
-CPU fallback is automatic if GPU fails.
+With `openai-whisper` instead (common pip default), the same hardware would show:
+```
+Accel:             CPU
+Accel reason:      openai-whisper typically runs on CPU even with GPU hardware —
+                   install faster-whisper for GPU acceleration
+Estimated Speed:   near-realtime
+```
+
+CPU fallback is automatic if GPU extraction fails.
 
 ---
 
@@ -257,7 +287,7 @@ Full reference: [Command Reference](docs/COMMAND_REFERENCE.md)
 ## FAQ
 
 **Q: Do I need a GPU?**
-No. GPU is optional but provides 15-30x speedup.
+No. GPU is optional and provides 15-30x speedup for **frame extraction**. Transcription runs on CPU by default; for GPU-accelerated transcription, install `faster-whisper` with CUDA wheels.
 
 **Q: What video formats are supported?**
 Any format ffmpeg can read: MP4, MOV, AVI, MKV, WebM, etc.

@@ -77,12 +77,18 @@ var (
 )
 
 func TranscribeAudioWithDetails(opts TranscribeOptions) (TranscribeResult, error) {
-	if shouldUseChunkedTranscription(opts) {
+	audioDurationSec := probeAudioDurationOrZero(opts.AudioPath)
+	if shouldUseChunkedTranscription(opts, audioDurationSec) {
 		return transcribeAudioChunked(opts)
 	}
+	stop := startTranscribeHeartbeat(opts.ProgressFn, "running", 0, 1, estimateTranscribeSeconds(audioDurationSec))
 	txt, jsonPath, err := transcribeSingleAudio(opts)
+	stop()
 	if err != nil {
 		return TranscribeResult{}, err
+	}
+	if opts.ProgressFn != nil {
+		opts.ProgressFn("done", 1.0)
 	}
 	return TranscribeResult{
 		TranscriptTxt:  txt,
@@ -90,16 +96,103 @@ func TranscribeAudioWithDetails(opts TranscribeOptions) (TranscribeResult, error
 	}, nil
 }
 
-func shouldUseChunkedTranscription(opts TranscribeOptions) bool {
-	if opts.ChunkDurationSec > 0 {
-		return true
+func probeAudioDurationOrZero(audioPath string) float64 {
+	p := strings.TrimSpace(audioPath)
+	if p == "" {
+		return 0
 	}
-	outDir := strings.TrimSpace(opts.OutDir)
-	if outDir == "" {
+	d, err := probeTranscriptionDuration(p)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
+}
+
+// 10% overhang so a clip slightly above one chunk (e.g. 630s @ 600s chunks)
+// still goes single-shot rather than spawning a 30s second chunk.
+const SingleShotChunkOverhangRatio = 1.10
+
+// shouldUseChunkedTranscription: durationSec == 0 means "unknown" — falls back
+// to the safe default (chunk when ChunkDurationSec > 0).
+func shouldUseChunkedTranscription(opts TranscribeOptions, durationSec float64) bool {
+	// Existing manifest always resumes chunked — protects interrupted long runs.
+	if outDir := strings.TrimSpace(opts.OutDir); outDir != "" {
+		if _, err := os.Stat(transcriptionManifestPath(outDir)); err == nil {
+			return true
+		}
+	}
+	if opts.ChunkDurationSec <= 0 {
 		return false
 	}
-	_, err := os.Stat(transcriptionManifestPath(outDir))
-	return err == nil
+	if durationSec > 0 && durationSec <= float64(opts.ChunkDurationSec)*SingleShotChunkOverhangRatio {
+		return false
+	}
+	return true
+}
+
+// Rough CPU-whisper-tiny realtime estimate (audio seconds × factor ≈ wall
+// seconds). Kept conservative so pct interpolation leans "a bit slow" rather
+// than racing past 100% mid-chunk. The heartbeat caps interpolation at 0.9 so
+// under-estimate is safer than over-estimate.
+const transcribeExpectedRealtimeFactor = 1.5
+
+func estimateTranscribeSeconds(audioSec float64) float64 {
+	if audioSec <= 0 {
+		return 60
+	}
+	expected := audioSec * transcribeExpectedRealtimeFactor
+	if expected < 30 {
+		return 30
+	}
+	return expected
+}
+
+func formatTranscribeElapsed(d time.Duration) string {
+	total := int(d.Seconds())
+	if total < 0 {
+		total = 0
+	}
+	if total < 3600 {
+		return fmt.Sprintf("%02d:%02d", total/60, total%60)
+	}
+	return fmt.Sprintf("%02d:%02d:%02d", total/3600, (total%3600)/60, total%60)
+}
+
+// startTranscribeHeartbeat spawns a goroutine that calls progressFn every
+// second with an interpolated pct inside [base, base+span] and a stage string
+// augmented with elapsed time. The interpolation caps at 0.9 of span so the
+// bar never claims completion before the work returns. Returns a stop func
+// that must be called to release the goroutine.
+func startTranscribeHeartbeat(progressFn func(string, float64), stage string, base, span, expectedSec float64) func() {
+	if progressFn == nil {
+		return func() {}
+	}
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				elapsed := time.Since(start)
+				frac := 0.0
+				if expectedSec > 0 {
+					frac = elapsed.Seconds() / expectedSec
+					if frac > 0.9 {
+						frac = 0.9
+					}
+				}
+				progressFn(
+					fmt.Sprintf("%s · %s elapsed", stage, formatTranscribeElapsed(elapsed)),
+					base+span*frac,
+				)
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 func transcriptionManifestPath(outDir string) string {
@@ -222,16 +315,25 @@ func transcribeAudioChunked(opts TranscribeOptions) (TranscribeResult, error) {
 			return transcriptionResultFromManifest(manifestPath, manifest), wrapTranscriptionManifestError(err, manifestPath)
 		}
 
+		stopHeartbeat := startTranscribeHeartbeat(
+			opts.ProgressFn,
+			fmt.Sprintf("chunk %d/%d", i+1, totalChunks),
+			float64(i)/float64(totalChunks),
+			1.0/float64(totalChunks),
+			estimateTranscribeSeconds(chunkDuration),
+		)
 		chunkTxt, chunkJSON, err := transcribeSingleAudio(TranscribeOptions{
-			Context:   runCtx,
-			AudioPath: chunk.AudioPath,
-			OutDir:    chunk.OutputDir,
-			Model:     opts.Model,
-			Language:  opts.Language,
-			Bin:       opts.Bin,
-			Backend:   opts.Backend,
-			Verbose:   opts.Verbose,
+			Context:    runCtx,
+			AudioPath:  chunk.AudioPath,
+			OutDir:     chunk.OutputDir,
+			Model:      opts.Model,
+			Language:   opts.Language,
+			Bin:        opts.Bin,
+			Backend:    opts.Backend,
+			Verbose:    opts.Verbose,
+			TimeoutSec: opts.TimeoutSec,
 		})
+		stopHeartbeat()
 		if err != nil {
 			chunk.LastError = err.Error()
 			if !isCancellationLike(err) {

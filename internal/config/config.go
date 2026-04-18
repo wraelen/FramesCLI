@@ -60,9 +60,20 @@ func SupportedWhisperModels() []string {
 	}
 }
 
+// defaultFramesRoot resolves the user-home `~/framescli/runs/` directory, falling
+// back to the cwd-relative `frames/` if the home dir isn't resolvable. Kept in
+// sync with media.defaultFramesRoot (duplicated to avoid a config→media import).
+func defaultFramesRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "frames"
+	}
+	return filepath.Join(home, "framescli", "runs")
+}
+
 func Default() Config {
 	return Config{
-		FramesRoot:        "frames",
+		FramesRoot:        defaultFramesRoot(),
 		OBSVideoDir:       "",
 		RecentVideoDirs:   []string{},
 		RecentExts:        []string{"mp4", "mkv", "mov"},
@@ -203,7 +214,7 @@ func ApplyEnvDefaults(cfg Config) {
 func normalize(cfg *Config) {
 	cfg.FramesRoot = strings.TrimSpace(cfg.FramesRoot)
 	if cfg.FramesRoot == "" {
-		cfg.FramesRoot = "frames"
+		cfg.FramesRoot = defaultFramesRoot()
 	}
 	cfg.OBSVideoDir = strings.TrimSpace(cfg.OBSVideoDir)
 	cfg.RecentVideoDirs = normalizePathList(cfg.RecentVideoDirs)

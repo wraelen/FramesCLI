@@ -278,13 +278,37 @@ func TestEstimateOutputs(t *testing.T) {
 
 func TestEstimateOutputsAutoFPS(t *testing.T) {
 	appCfg = appconfig.Default()
+	// 5s clip: auto fps caps at 8 → 40 frames.
 	info := media.VideoInfo{DurationSec: 5, Width: 640, Height: 360}
 	out := estimateOutputs(info, 0, "png", "frames", buildTranscriptPlan(info.DurationSec, appCfg, false), 0)
-	if out.FrameCount != 60 {
-		t.Fatalf("expected auto-fps estimate to target ~60 frames, got %+v", out)
+	if out.FrameCount != 40 {
+		t.Fatalf("expected auto-fps 8 × 5s = 40 frames, got %+v", out)
 	}
 	if out.Transcript.Enabled {
 		t.Fatalf("expected transcript estimate disabled for frames mode, got %+v", out.Transcript)
+	}
+}
+
+func TestAutoFPSForDurationTiers(t *testing.T) {
+	cases := []struct {
+		duration float64
+		want     float64
+	}{
+		{0, 1},         // invalid → safe floor
+		{-1, 1},        // negative → safe floor
+		{10, 8},        // short clip → capped at 8 fps
+		{30, 8},        // 30s at 480 target → 16 clamped to 8
+		{60, 8},        // 1 min → 8 fps exact
+		{120, 4},       // 2 min → 4 fps
+		{300, 1.5},     // 5 min → 1.5 fps (rounded)
+		{600, 1},       // 10 min → floor 1 fps
+		{3600, 1},      // 1 hr → floor 1 fps
+	}
+	for _, tc := range cases {
+		got := autoFPSForDuration(tc.duration)
+		if got != tc.want {
+			t.Fatalf("autoFPSForDuration(%v) = %v, want %v", tc.duration, got, tc.want)
+		}
 	}
 }
 
@@ -353,6 +377,77 @@ func TestResolveWorkflowSettingsCustomConfigDefaultsStillWin(t *testing.T) {
 	}
 }
 
+func TestImportDeprecatedCommandIsHiddenAndGuided(t *testing.T) {
+	cmd := importDeprecatedCommand()
+	if cmd.Use == "" || !strings.HasPrefix(cmd.Use, "import") {
+		t.Fatalf("expected Use to start with 'import', got %q", cmd.Use)
+	}
+	if !cmd.Hidden {
+		t.Fatalf("expected import command to be hidden from help")
+	}
+	if !strings.Contains(strings.ToLower(cmd.Short), "deprecated") {
+		t.Fatalf("expected Short to mention deprecation, got %q", cmd.Short)
+	}
+}
+
+func TestProbeTranscribeAccelRuleBased(t *testing.T) {
+	cases := []struct {
+		name      string
+		backend   string
+		hwGPU     bool
+		wantGPU   bool
+		reasonHas string
+	}{
+		{"no hw GPU → CPU regardless of backend", "faster-whisper", false, false, "no GPU detected"},
+		{"whisper on GPU hw → CPU with guidance", "whisper", true, false, "faster-whisper for GPU acceleration"},
+		{"faster-whisper on GPU hw → GPU", "faster-whisper", true, true, "faster-whisper with GPU hardware"},
+		{"faster_whisper alias on GPU hw → GPU", "faster_whisper", true, true, "faster-whisper with GPU hardware"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := appconfig.Default()
+			got := probeTranscribeAccel(cfg, tc.backend, tc.hwGPU)
+			if got.UsesGPU != tc.wantGPU {
+				t.Fatalf("UsesGPU: got %v, want %v (reason: %q)", got.UsesGPU, tc.wantGPU, got.Reason)
+			}
+			if !strings.Contains(got.Reason, tc.reasonHas) {
+				t.Fatalf("Reason: got %q, want substring %q", got.Reason, tc.reasonHas)
+			}
+		})
+	}
+}
+
+func TestTranscriptRealtimeRangeIsCPUFactorsWhenTranscribeGPUFalse(t *testing.T) {
+	// Key honesty check: hw GPU does not imply GPU transcription speeds.
+	// Caller passes transcribeGPU=false (e.g. backend=whisper on GPU hw)
+	// and the factors should match the CPU branch, not the GPU branch.
+	cpuLow, cpuHigh := transcriptRealtimeRange("whisper", "base", false)
+	gpuLow, gpuHigh := transcriptRealtimeRange("whisper", "base", true)
+	if cpuHigh >= gpuLow {
+		t.Fatalf("CPU factors should be strictly below GPU: cpu=[%v,%v] gpu=[%v,%v]",
+			cpuLow, cpuHigh, gpuLow, gpuHigh)
+	}
+}
+
+func TestResolveWorkflowSettingsAutoFPSMarksMode(t *testing.T) {
+	info := media.VideoInfo{DurationSec: 1068, Width: 640, Height: 360}
+	got := resolveWorkflowSettings(info, 0, "png", "balanced", true, false, false, false, 0, false)
+	if got.FPSMode != "auto" {
+		t.Fatalf("expected FPSMode=auto when --fps 0/auto explicit, got %q", got.FPSMode)
+	}
+	if got.FPS <= 0 {
+		t.Fatalf("expected auto fps to be > 0 after resolution, got %v", got.FPS)
+	}
+}
+
+func TestResolveWorkflowSettingsExplicitNumericDoesNotSetAutoMode(t *testing.T) {
+	info := media.VideoInfo{DurationSec: 120, Width: 1280, Height: 720}
+	got := resolveWorkflowSettings(info, 4, "png", "balanced", true, false, false, false, 0, false)
+	if got.FPSMode != "" {
+		t.Fatalf("expected empty FPSMode for explicit numeric fps, got %q", got.FPSMode)
+	}
+}
+
 func TestResolveVideoInputNormalizesWindowsPathOnNonWindows(t *testing.T) {
 	got, note, err := resolveVideoInput(`C:\Users\wraelen\Videos\clip.mp4`)
 	if err != nil {
@@ -407,6 +502,7 @@ func TestLatestBenchmarkPreviewHint(t *testing.T) {
 }
 
 func TestRunPreviewResultAutoFPS(t *testing.T) {
+	requireFFmpegToolsMainTest(t)
 	tmp := t.TempDir()
 	video := filepath.Join(tmp, "sample.mp4")
 	cmd := exec.Command("ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=24", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=16000", "-t", "5", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", video)
@@ -417,8 +513,9 @@ func TestRunPreviewResultAutoFPS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runPreviewResult returned error: %v", err)
 	}
-	if fps, ok := got["target_fps"].(float64); !ok || fps != 12 {
-		t.Fatalf("expected target_fps=12, got %#v", got["target_fps"])
+	// 5s clip: auto fps caps at 8 (new tiered formula; previously would have been 12).
+	if fps, ok := got["target_fps"].(float64); !ok || fps != 8 {
+		t.Fatalf("expected target_fps=8 (auto cap), got %#v", got["target_fps"])
 	}
 	estimate, ok := got["estimate"].(outputEstimate)
 	if !ok {
@@ -1302,5 +1399,48 @@ func TestExistingTranscriptArtifacts(t *testing.T) {
 	}
 	if _, _, ok := existingTranscriptArtifacts(dir); ok {
 		t.Fatal("empty txt should disqualify the pair")
+	}
+}
+
+func TestParseDurationWithDays(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"30d", 30 * 24 * time.Hour, false},
+		{"7d12h", 7*24*time.Hour + 12*time.Hour, false},
+		{"2h", 2 * time.Hour, false},
+		{"2h30m", 2*time.Hour + 30*time.Minute, false},
+		{"", 0, true},
+		{"abc", 0, true},
+		{"d", 0, true}, // empty days prefix
+	}
+	for _, tc := range cases {
+		got, err := parseDurationWithDays(tc.in)
+		if (err != nil) != tc.wantErr {
+			t.Fatalf("%q: err=%v wantErr=%v", tc.in, err, tc.wantErr)
+		}
+		if err == nil && got != tc.want {
+			t.Fatalf("%q: got %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestHumanSize(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0 B"},
+		{512, "512 B"},
+		{1024, "1.0 KB"},
+		{2 * 1024 * 1024, "2.0 MB"},
+		{int64(3.5 * 1024 * 1024 * 1024), "3.50 GB"},
+	}
+	for _, tc := range cases {
+		if got := humanSize(tc.in); got != tc.want {
+			t.Fatalf("humanSize(%d) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

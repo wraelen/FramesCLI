@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.4] - 2026-04-18
+
+Follow-up polish driven by an external second-pass debug pack against v0.2.3.
+
+### Fixed
+- **`--transcribe-timeout` now reports the correct value when it fires.** The chunked path wasn't propagating `TimeoutSec` to the inner whisper call, so stderr printed `transcription timed out after 0s` even when the user passed `--transcribe-timeout 5`. The timeout itself fired correctly — only the message was wrong.
+- **`--fps auto` is now visible in output and metadata.** Previously the auto-resolved fps silently appeared as a concrete number with no indication that auto-mode was chosen. Now run.json records `fps_mode: "auto"`, preview JSON includes `fps_mode`, and the extract header prints `fps: 1.00 (auto, computed from duration 1068.5s)`.
+- **Short clips skip the chunked transcription pipeline.** Clips that fit in one chunk (with 10% overhang tolerance) now go through a single-shot path — no manifest, no ffmpeg chunk-split, no merge step. A 60-second clip at the default 600s chunk duration saves several seconds of overhead and produces identical output. Existing manifests still always resume via the chunked path, so interrupted long runs are unaffected. The transcribe header now shows `single-shot (clip 60s fits in one 600s chunk)` instead of a misleading `chunks=1`.
+
+### Added
+- **Hidden `import` deprecation command.** `framescli import <url>` used to return "unknown command" after the URL flow moved to `extract --url`. Now it prints a clear migration message pointing at the new command form. Kept hidden from `--help` so it doesn't re-advertise the removed surface.
+- **Transcription heartbeat makes progress visible during long chunks.** A per-chunk heartbeat goroutine emits stage + elapsed-time updates every second, with interpolated pct capped at 90% of the chunk's span so the bar never claims completion before whisper actually returns. Output now looks like `chunk 1/2 · 00:47 elapsed` instead of a frozen `chunk 1/2 (0%)`. Single-shot runs get the same treatment. Previous behavior emitted pct only at chunk boundaries, which made minutes of whisper work appear stuck.
+- **Renderer switches to newline cadence when stdout isn't a TTY.** When stdout is a pipe, log file, or CI buffer, the renderer emits one progress line every 5s instead of carriage-return animation at 200ms. Fixes the external tester report of "hundreds of repeated `chunk 1/2 (0%)` lines" in non-terminal environments.
+
+### Changed
+- **Default output root moved to `~/framescli/runs/`.** Previously ran in `./frames/` relative to the current working directory, which dumped potentially-GB-sized output wherever the user happened to invoke the command. Existing user configs with a custom `frames_root` are untouched; only first-run defaults change. `framescli doctor` now surfaces `Output root:` and total usage across runs.
+- **`framescli clean` gained selective pruning flags.** New `--older-than <duration>` (supports `30d`, `12h`, `7d12h`), `--keep-last <N>`, and `--dry-run` — prune without nuking the entire root. The no-flag form preserves the historical "wipe everything" behavior for backward compat. Runs are identified as direct subdirs containing `run.json`, so stray non-run content (diagnostics, index.json) is left alone. Extract's end-of-run summary prints a soft storage hint when the root exceeds 5 GB.
+- **`--fps auto` produces usable density for every duration, not just <60s clips.** The old formula `round(60/duration)` targeted ~60 total frames, which clamped to 1 fps for anything longer than 45 seconds — effectively making `auto` a constant for every realistic video. The new formula targets ~480 frames with clamps at `[1, 8]` fps: a 10s clip gets 8 fps (80 frames), a 2-min clip gets 4 fps (480 frames), a 5-min video gets 1.5 fps (450 frames), a 30-min video keeps 1 fps (1800 frames). Short/medium clips catch per-second action that used to slip between samples; long recordings keep the sensible 1 fps baseline.
+- **GPU acceleration is now reported per-subsystem.** Previously a single `doctorHasGPU()` bool drove both extraction *and* transcription speed claims — so a machine with an NVIDIA GPU + only `openai-whisper` installed got `"~10x realtime"` headlines while whisper actually ran on CPU (emitting `FP16 is not supported on CPU; using FP32 instead`). Now:
+  - Doctor shows `Accel: GPU | CPU` with an explicit reason line under Transcription.
+  - `openai-whisper` always reports CPU estimates (its typical pip install is CPU-only even on GPU systems); `faster-whisper` reports GPU when hardware GPU is present. The Hardware section continues to surface the detected GPU for extraction.
+  - The extract transcribe header now prints `accel: <reason>` so the expectation is honest at run time.
+  - Preview JSON, doctor JSON, and extract messaging all consume the same `transcribeAccel` result. New fields on doctor JSON: `transcribe_uses_gpu`, `transcribe_accel_reason`.
+  - Rule-based for now; a Python-level CUDA probe (`ctranslate2.get_cuda_device_count`, `torch.cuda.is_available`) can replace the rule in a follow-up if the heuristic misclassifies real setups.
+
+### Credits
+Thanks to the same external live-test agent whose second-pass debug pack (2026-04-17) surfaced these follow-ups.
+
 ## [0.2.3] - 2026-04-17
 
 Polish release driven by an external live-test debug pack. Closes the gaps that made v0.2.2 feel "more like a power-user tool than a polished public-facing product."

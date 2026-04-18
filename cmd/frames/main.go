@@ -124,7 +124,7 @@ func formatClockDuration(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", m, s)
 }
 
-func printTranscribeHeader(backend, model string, chunkSec int, durationSec float64, hasGPU bool) {
+func printTranscribeHeader(backend, model string, chunkSec int, durationSec float64, accel transcribeAccel) {
 	backend = strings.TrimSpace(backend)
 	if backend == "" {
 		backend = "auto"
@@ -133,20 +133,27 @@ func printTranscribeHeader(backend, model string, chunkSec int, durationSec floa
 	if model == "" {
 		model = "base"
 	}
-	speedHint := "may take several minutes on CPU"
-	if hasGPU {
-		speedHint = "GPU detected — typically ~10x realtime"
+	speedHint := "CPU path — runtime can approach clip length"
+	if accel.UsesGPU {
+		speedHint = "GPU-accelerated transcription — typically several× realtime"
 	}
 	fmt.Printf("  transcribe: starting (%s)\n", speedHint)
+	if reason := strings.TrimSpace(accel.Reason); reason != "" {
+		fmt.Printf("    accel: %s\n", reason)
+	}
 	fmt.Printf("    backend=%s · model=%s", backend, model)
 	if chunkSec > 0 && durationSec > 0 {
-		chunks := int(math.Ceil(durationSec / float64(chunkSec)))
-		if chunks > 0 {
-			fmt.Printf(" · chunks=%d (~%ds each)", chunks, chunkSec)
+		if durationSec <= float64(chunkSec)*media.SingleShotChunkOverhangRatio {
+			fmt.Printf(" · single-shot (clip %.0fs fits in one %ds chunk)", durationSec, chunkSec)
+		} else {
+			chunks := int(math.Ceil(durationSec / float64(chunkSec)))
+			if chunks > 0 {
+				fmt.Printf(" · chunks=%d (~%ds each)", chunks, chunkSec)
+			}
 		}
 	}
 	fmt.Println()
-	if !hasGPU {
+	if !accel.UsesGPU {
 		whisperPath, _ := exec.LookPath("whisper")
 		fasterWhisperPath, _ := exec.LookPath("faster-whisper")
 		if whisperPath != "" && fasterWhisperPath == "" {
@@ -166,13 +173,31 @@ func newTranscribeProgressRenderer(label string) *transcribeProgressRenderer {
 	return &transcribeProgressRenderer{label: label, stage: "starting"}
 }
 
+// isStdoutTTY reports whether stdout is a terminal. Non-TTY (pipes, CI, file
+// redirect) can't interpret carriage returns, so the renderer falls back to
+// newline-per-update cadence to avoid spraying hundreds of unrendered CR lines.
+func isStdoutTTY() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
 // run executes fn while animating a spinner with progress updates from the
 // callback. Only one goroutine writes to stdout, so spinner ticks and progress
 // updates never collide. The callback is goroutine-safe and idempotent.
+// On a TTY: carriage-return animated at 200ms. Off a TTY (pipe, log, CI): one
+// newline update every 5s so piped output stays readable and informative.
 func (r *transcribeProgressRenderer) run(fn func(progressFn func(stage string, pct float64)) error) error {
+	tty := isStdoutTTY()
+	tickInterval := 200 * time.Millisecond
+	if !tty {
+		tickInterval = 5 * time.Second
+	}
 	spinner := []rune{'|', '/', '-', '\\'}
 	done := make(chan struct{})
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
 	progressFn := func(stage string, pct float64) {
@@ -191,24 +216,40 @@ func (r *transcribeProgressRenderer) run(fn func(progressFn func(stage string, p
 	}()
 
 	i := 0
+	var lastNonTTYStage string
+	var lastNonTTYPct float64 = -1
 	for {
 		select {
 		case <-done:
 			r.mu.Lock()
 			finalStage := r.stage
 			r.mu.Unlock()
-			if runErr == nil {
-				fmt.Printf("\r%s [ok] %s                              \n", r.label, finalStage)
+			if tty {
+				if runErr == nil {
+					fmt.Printf("\r%s [ok] %s                              \n", r.label, finalStage)
+				} else {
+					fmt.Printf("\r%s [x] failed                              \n", r.label)
+				}
 			} else {
-				fmt.Printf("\r%s [x] failed                              \n", r.label)
+				if runErr == nil {
+					fmt.Printf("%s [ok] %s\n", r.label, finalStage)
+				} else {
+					fmt.Printf("%s [x] failed\n", r.label)
+				}
 			}
 			return runErr
 		case <-ticker.C:
 			r.mu.Lock()
 			stage, pct := r.stage, r.pct
 			r.mu.Unlock()
-			fmt.Printf("\r%s [%c] %s (%.0f%%)         ", r.label, spinner[i%len(spinner)], stage, pct*100)
-			i++
+			if tty {
+				fmt.Printf("\r%s [%c] %s (%.0f%%)         ", r.label, spinner[i%len(spinner)], stage, pct*100)
+				i++
+			} else if stage != lastNonTTYStage || pct != lastNonTTYPct {
+				fmt.Printf("%s %s (%.0f%%)\n", r.label, stage, pct*100)
+				lastNonTTYStage = stage
+				lastNonTTYPct = pct
+			}
 		}
 	}
 }
@@ -276,6 +317,7 @@ func main() {
 
 	root.AddCommand(extractCommand())
 	root.AddCommand(extractBatchCommand())
+	root.AddCommand(importDeprecatedCommand())
 	root.AddCommand(previewCommand())
 	root.AddCommand(openLastCommand())
 	root.AddCommand(copyLastCommand())
@@ -392,6 +434,7 @@ type resolvedWorkflowSettings struct {
 	Preset           string  `json:"preset"`
 	MediaPreset      string  `json:"media_preset"`
 	FPS              float64 `json:"fps"`
+	FPSMode          string  `json:"fps_mode,omitempty"`
 	FrameFormat      string  `json:"frame_format"`
 	ChunkDurationSec int     `json:"chunk_duration_sec,omitempty"`
 }
@@ -913,7 +956,8 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		return result, fmt.Errorf("invalid video input %q: %w", videoPath, err)
 	}
 	resolved := resolveWorkflowSettings(videoInfo, fps, opts.FrameFormat, opts.Preset, opts.FPSExplicit, opts.FormatExplicit, opts.PresetExplicit, opts.Voice, opts.ChunkDurationSec, opts.ChunkExplicit)
-	transcriptPlan := buildTranscriptPlanWithSettings(videoInfo.DurationSec, opts.TranscribeBackend, opts.TranscribeModel, appCfg, doctorHasGPU())
+	transcribeAccelInfo := probeTranscribeAccel(appCfg, opts.TranscribeBackend, doctorHasGPU())
+	transcriptPlan := buildTranscriptPlanWithSettings(videoInfo.DurationSec, opts.TranscribeBackend, opts.TranscribeModel, appCfg, transcribeAccelInfo.UsesGPU)
 	previewMode := "frames"
 	if opts.Voice {
 		previewMode = "both"
@@ -939,7 +983,11 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		fmt.Printf("  duration: %.2fs\n", videoInfo.DurationSec)
 		fmt.Printf("  resolution: %dx%d\n", videoInfo.Width, videoInfo.Height)
 		fmt.Printf("  source fps: %.2f\n", videoInfo.FrameRate)
-		fmt.Printf("  fps: %.2f, format: %s\n", resolved.FPS, resolved.FrameFormat)
+		if resolved.FPSMode == "auto" {
+			fmt.Printf("  fps: %.2f (auto, computed from duration %.1fs), format: %s\n", resolved.FPS, videoInfo.DurationSec, resolved.FrameFormat)
+		} else {
+			fmt.Printf("  fps: %.2f, format: %s\n", resolved.FPS, resolved.FrameFormat)
+		}
 		fmt.Printf("  hwaccel: %s, preset: %s (media=%s)\n", opts.HWAccel, resolved.Preset, resolved.MediaPreset)
 		if opts.Voice {
 			fmt.Printf("  transcript chunking: %ds\n", resolved.ChunkDurationSec)
@@ -978,6 +1026,7 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 		Context:      ctx,
 		VideoPath:    videoPath,
 		FPS:          resolved.FPS,
+		FPSMode:      resolved.FPSMode,
 		OutDir:       opts.OutDir,
 		FrameFormat:  resolved.FrameFormat,
 		JPGQuality:   opts.JPGQuality,
@@ -1105,7 +1154,7 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 			}
 		}
 		if interactive {
-			printTranscribeHeader(opts.TranscribeBackend, opts.TranscribeModel, resolved.ChunkDurationSec, videoInfo.DurationSec, doctorHasGPU())
+			printTranscribeHeader(opts.TranscribeBackend, opts.TranscribeModel, resolved.ChunkDurationSec, videoInfo.DurationSec, transcribeAccelInfo)
 		}
 		if interactive && opts.Verbose {
 			transcriptTxt, transcriptJSON, err = media.TranscribeAudioWithOptions(media.TranscribeOptions{
@@ -1293,6 +1342,9 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 	}
 	if interactive {
 		fmt.Printf("Elapsed:       %s\n", time.Duration(result.ElapsedMs)*time.Millisecond)
+		if hint := framesRootStorageHint(appCfg.FramesRoot); hint != "" {
+			fmt.Println(hint)
+		}
 	}
 
 	// Show performance hints only for fallback scenarios
@@ -1573,15 +1625,26 @@ func parseExtractFPSSpec(spec string) (float64, error) {
 	return fps, nil
 }
 
+// autoFPSForDuration targets ~480 total frames — dense enough that
+// action-dense content doesn't slip between samples, sparse enough that
+// long recordings don't explode disk usage. The old formula
+// (round(60/duration)) clamped to 1 fps for anything >45s, which made
+// "auto" a constant for every real-world video. The new formula scales
+// the choice to duration, clamped to [1, 8] fps.
 func autoFPSForDuration(durationSec float64) float64 {
 	if durationSec <= 0 {
 		return 1
 	}
-	fps := math.Round(60.0 / durationSec)
+	const autoTargetFrames = 480.0
+	fps := autoTargetFrames / durationSec
+	if fps > 8 {
+		return 8
+	}
 	if fps < 1 {
 		return 1
 	}
-	return fps
+	// Round to nearest 0.5 for clean display ("fps: 1.50 (auto, ...)").
+	return math.Round(fps*2) / 2
 }
 
 func workflowPresetDefinitions() []workflowPresetDefinition {
@@ -1656,9 +1719,11 @@ func resolveWorkflowSettings(info media.VideoInfo, requestedFPS float64, request
 	defaultCfg := appconfig.Default()
 	fps := requestedFPS
 	implicitConfigFPS := !fpsExplicit && requestedFPS > 0 && math.Abs(requestedFPS-defaultCfg.DefaultFPS) < 0.0001
+	fpsMode := ""
 	switch {
 	case fpsExplicit && fps <= 0:
 		fps = autoFPSForDuration(info.DurationSec)
+		fpsMode = "auto"
 	case fpsExplicit:
 	case presetExplicit:
 		fps = preset.DefaultFPS
@@ -1694,8 +1759,25 @@ func resolveWorkflowSettings(info media.VideoInfo, requestedFPS float64, request
 		Preset:           preset.Name,
 		MediaPreset:      preset.MediaPreset,
 		FPS:              fps,
+		FPSMode:          fpsMode,
 		FrameFormat:      format,
 		ChunkDurationSec: resolvedChunkDuration,
+	}
+}
+
+func importDeprecatedCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "import [<url>]",
+		Short:  "Deprecated: use `framescli extract --url <url>` instead",
+		Hidden: true,
+		Args:   cobra.ArbitraryArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			target := "<url>"
+			if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
+				target = args[0]
+			}
+			failf("The `import` command has been removed. Use:\n  framescli extract --url %s\n\nPositional URLs also work: `framescli extract %s`.\n", target, target)
+		},
 	}
 }
 
@@ -2286,7 +2368,7 @@ func previewCommand() *cobra.Command {
 				return
 			}
 			resolved := resolveWorkflowSettings(info, fps, format, preset, cmd.Flags().Changed("fps"), cmd.Flags().Changed("format"), cmd.Flags().Changed("preset"), previewModeUsesTranscript(mode), chunkDuration, cmd.Flags().Changed("chunk-duration"))
-			transcriptPlan := buildTranscriptPlan(info.DurationSec, appCfg, doctorHasGPU())
+			transcriptPlan := buildTranscriptPlan(info.DurationSec, appCfg, probeTranscribeAccel(appCfg, "", doctorHasGPU()).UsesGPU)
 			estimate := estimateOutputs(info, resolved.FPS, resolved.FrameFormat, mode, transcriptPlan, resolved.ChunkDurationSec)
 			if jsonOut {
 				payload := map[string]any{
@@ -2302,6 +2384,9 @@ func previewCommand() *cobra.Command {
 					"chunk_duration_sec": resolved.ChunkDurationSec,
 					"estimate":           estimate,
 				}
+				if resolved.FPSMode != "" {
+					payload["fps_mode"] = resolved.FPSMode
+				}
 				emitAutomationJSON("preview", started, "success", payload, nil)
 				return
 			}
@@ -2316,7 +2401,11 @@ func previewCommand() *cobra.Command {
 			fmt.Printf("Source FPS:  %.2f\n", info.FrameRate)
 			fmt.Printf("Mode:        %s\n", mode)
 			fmt.Printf("Preset:      %s (media=%s)\n", resolved.Preset, resolved.MediaPreset)
-			fmt.Printf("Target FPS:  %.2f\n", resolved.FPS)
+			if resolved.FPSMode == "auto" {
+				fmt.Printf("Target FPS:  %.2f (auto, computed from duration %.1fs)\n", resolved.FPS, info.DurationSec)
+			} else {
+				fmt.Printf("Target FPS:  %.2f\n", resolved.FPS)
+			}
 			fmt.Printf("Format:      %s\n", resolved.FrameFormat)
 			if previewModeUsesTranscript(mode) {
 				fmt.Printf("Chunking:    %ds\n", resolved.ChunkDurationSec)
@@ -2534,11 +2623,15 @@ func buildDiskProfiles(info media.VideoInfo, selectedFPS float64, selectedFormat
 	return profiles
 }
 
-func buildTranscriptPlan(durationSec float64, cfg appconfig.Config, gpuAvailable bool) previewTranscriptPlan {
-	return buildTranscriptPlanWithSettings(durationSec, cfg.TranscribeBackend, cfg.WhisperModel, cfg, gpuAvailable)
+func buildTranscriptPlan(durationSec float64, cfg appconfig.Config, transcribeGPU bool) previewTranscriptPlan {
+	return buildTranscriptPlanWithSettings(durationSec, cfg.TranscribeBackend, cfg.WhisperModel, cfg, transcribeGPU)
 }
 
-func buildTranscriptPlanWithSettings(durationSec float64, backendInput string, modelInput string, cfg appconfig.Config, gpuAvailable bool) previewTranscriptPlan {
+// buildTranscriptPlanWithSettings: transcribeGPU narrowly reflects whether the
+// *transcription backend* is expected to use GPU acceleration — NOT whether
+// the machine has a GPU for ffmpeg. See probeTranscribeAccel for the
+// separation between hardware GPU and transcription GPU.
+func buildTranscriptPlanWithSettings(durationSec float64, backendInput string, modelInput string, cfg appconfig.Config, transcribeGPU bool) previewTranscriptPlan {
 	model := strings.ToLower(strings.TrimSpace(modelInput))
 	if model == "" {
 		model = "base"
@@ -2547,7 +2640,7 @@ func buildTranscriptPlanWithSettings(durationSec float64, backendInput string, m
 	cfg.WhisperModel = model
 	backend := resolvePreviewTranscribeBackend(cfg)
 	hardware := "cpu"
-	if gpuAvailable {
+	if transcribeGPU {
 		hardware = "gpu-capable"
 	}
 	plan := previewTranscriptPlan{
@@ -2565,7 +2658,7 @@ func buildTranscriptPlanWithSettings(durationSec float64, backendInput string, m
 		return plan
 	}
 
-	lowFactor, highFactor := transcriptRealtimeRange(backend, model, gpuAvailable)
+	lowFactor, highFactor := transcriptRealtimeRange(backend, model, transcribeGPU)
 	midFactor := (lowFactor + highFactor) / 2
 	switch {
 	case midFactor >= 6:
@@ -2580,9 +2673,9 @@ func buildTranscriptPlanWithSettings(durationSec float64, backendInput string, m
 		plan.RuntimeClass = "heavy"
 	}
 	switch {
-	case gpuAvailable && midFactor >= 3:
+	case transcribeGPU && midFactor >= 3:
 		plan.CostHint = "GPU-backed transcription should stay well below video runtime in common cases"
-	case gpuAvailable:
+	case transcribeGPU:
 		plan.CostHint = "GPU helps, but larger Whisper models can still add noticeable runtime"
 	case midFactor >= 1:
 		plan.CostHint = "CPU-only transcription is plausible here, but expect runtime close to the clip length"
@@ -2594,7 +2687,7 @@ func buildTranscriptPlanWithSettings(durationSec float64, backendInput string, m
 		plan.EstimatedMinutesHigh = (durationSec / lowFactor) / 60.0
 		plan.RuntimeSummary = fmt.Sprintf("%s of transcript time for this clip", formatMinuteRange(plan.EstimatedMinutesLow, plan.EstimatedMinutesHigh))
 	}
-	if !gpuAvailable && (model == "large" || model == "medium") {
+	if !transcribeGPU && (model == "large" || model == "medium") {
 		plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s on CPU-only hardware is the slowest transcript path in common use.", model))
 	}
 	return plan
@@ -2623,12 +2716,12 @@ func resolvePreviewTranscribeBackend(cfg appconfig.Config) string {
 	return backend
 }
 
-func transcriptRealtimeRange(backend string, model string, gpuAvailable bool) (float64, float64) {
+func transcriptRealtimeRange(backend string, model string, transcribeGPU bool) (float64, float64) {
 	model = strings.ToLower(strings.TrimSpace(model))
 	if model == "" {
 		model = "base"
 	}
-	if gpuAvailable {
+	if transcribeGPU {
 		switch backend {
 		case "faster-whisper":
 			switch model {
@@ -2852,8 +2945,8 @@ func runPreviewResult(input string, fps float64, format string, mode string, pre
 		return nil, fmt.Errorf("video probe failed: %w", err)
 	}
 	resolved := resolveWorkflowSettings(info, fps, format, preset, fpsExplicit, formatExplicit, presetExplicit, previewModeUsesTranscript(mode), chunkDurationSec, chunkExplicit)
-	estimate := estimateOutputs(info, resolved.FPS, resolved.FrameFormat, mode, buildTranscriptPlan(info.DurationSec, appCfg, doctorHasGPU()), resolved.ChunkDurationSec)
-	return map[string]any{
+	estimate := estimateOutputs(info, resolved.FPS, resolved.FrameFormat, mode, buildTranscriptPlan(info.DurationSec, appCfg, probeTranscribeAccel(appCfg, "", doctorHasGPU()).UsesGPU), resolved.ChunkDurationSec)
+	result := map[string]any{
 		"input":              input,
 		"resolved":           videoPath,
 		"source_note":        note,
@@ -2865,7 +2958,11 @@ func runPreviewResult(input string, fps float64, format string, mode string, pre
 		"media_preset":       resolved.MediaPreset,
 		"chunk_duration_sec": resolved.ChunkDurationSec,
 		"estimate":           estimate,
-	}, nil
+	}
+	if resolved.FPSMode != "" {
+		result["fps_mode"] = resolved.FPSMode
+	}
+	return result, nil
 }
 
 func openLastCommand() *cobra.Command {
@@ -4297,9 +4394,9 @@ func sheetCommand() *cobra.Command {
 }
 
 func cleanCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "clean [targetDir]",
-		Short: "Clean extracted frame artifacts",
+		Short: "Clean extracted frame artifacts (selective pruning via --older-than or --keep-last)",
 		Args:  cobra.ArbitraryArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			var target string
@@ -4307,20 +4404,184 @@ func cleanCommand() *cobra.Command {
 				target = strings.Join(args, " ")
 			}
 			if target == "" {
+				target = appCfg.FramesRoot
+			}
+			if target == "" {
 				target = media.DefaultFramesRoot
 			}
-			fmt.Printf("Cleaning frames in: %s\n", target)
-			removed, err := media.CleanFrames(target)
+
+			olderThanSpec, _ := cmd.Flags().GetString("older-than")
+			keepLast, _ := cmd.Flags().GetInt("keep-last")
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+			// If no selective flag was passed, preserve the historical
+			// "wipe everything" behavior so existing workflows don't change.
+			if strings.TrimSpace(olderThanSpec) == "" && keepLast <= 0 {
+				fmt.Printf("Cleaning frames in: %s\n", target)
+				if dryRun {
+					fmt.Println("(dry run) would remove the entire frames root")
+					return
+				}
+				removed, err := media.CleanFrames(target)
+				if err != nil {
+					failf("Frame cleanup failed: %v\n", err)
+					return
+				}
+				if removed == 0 {
+					fmt.Println("Done. Nothing to remove.")
+					return
+				}
+				fmt.Println("Done. Frames folder reset.")
+				return
+			}
+
+			var olderThan time.Duration
+			if strings.TrimSpace(olderThanSpec) != "" {
+				d, err := parseDurationWithDays(olderThanSpec)
+				if err != nil {
+					failf("invalid --older-than %q: %v\n", olderThanSpec, err)
+					return
+				}
+				olderThan = d
+			}
+
+			result, err := media.PruneFrames(media.PruneFramesOptions{
+				RootDir:   target,
+				OlderThan: olderThan,
+				KeepLast:  keepLast,
+				DryRun:    dryRun,
+			})
 			if err != nil {
-				failf("Frame cleanup failed: %v\n", err)
+				failf("Prune failed: %v\n", err)
 				return
 			}
-			if removed == 0 {
-				fmt.Println("Done. Nothing to remove.")
+			label := "Pruned"
+			if dryRun {
+				label = "Would prune"
+			}
+			fmt.Printf("%s in: %s\n", label, result.RootDir)
+			fmt.Printf("Runs considered: %d\n", result.TotalRuns)
+			if len(result.Pruned) == 0 {
+				fmt.Println("Nothing matched the prune criteria.")
 				return
 			}
-			fmt.Println("Done. Frames folder reset.")
+			for _, c := range result.Pruned {
+				fmt.Printf("- %s (%s, %s) [%s]\n", c.Path, c.ModTime.Format("2006-01-02"), humanSize(c.SizeBytes), c.Reason)
+			}
+			fmt.Printf("%s: %d runs, %s reclaimed\n", label, len(result.Pruned), humanSize(result.BytesFreed))
 		},
+	}
+	cmd.Flags().String("older-than", "", "Prune runs older than this age (e.g. '30d', '12h', '2h30m')")
+	cmd.Flags().Int("keep-last", 0, "Keep only the N most-recent runs; prune the rest")
+	cmd.Flags().Bool("dry-run", false, "Preview what would be pruned without removing anything")
+	return cmd
+}
+
+// parseDurationWithDays extends time.ParseDuration with a "Nd" unit for days,
+// since the stdlib stops at hours. Examples: "30d", "7d12h", "2h".
+func parseDurationWithDays(spec string) (time.Duration, error) {
+	s := strings.TrimSpace(strings.ToLower(spec))
+	if s == "" {
+		return 0, fmt.Errorf("empty duration")
+	}
+	var days time.Duration
+	if idx := strings.Index(s, "d"); idx > 0 {
+		n, err := strconv.Atoi(s[:idx])
+		if err != nil {
+			return 0, fmt.Errorf("bad days component: %w", err)
+		}
+		days = time.Duration(n) * 24 * time.Hour
+		s = strings.TrimSpace(s[idx+1:])
+	}
+	if s == "" {
+		return days, nil
+	}
+	rest, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	return days + rest, nil
+}
+
+// framesRootStorageThreshold is the size at which extract's end-of-run summary
+// nags the user to clean up. Deliberately loose (5 GB) — anyone below this
+// doesn't need a reminder; anyone above benefits from knowing the number.
+const framesRootStorageThreshold = 5 * 1024 * 1024 * 1024
+
+// framesRootStorageHint returns a one-line soft warning when the frames root
+// exceeds the storage threshold. Empty string when below threshold, unset, or
+// the path doesn't exist yet. Non-fatal on probe errors (returns "").
+func framesRootStorageHint(framesRoot string) string {
+	root := strings.TrimSpace(framesRoot)
+	if root == "" {
+		return ""
+	}
+	size, runs, err := framesRootUsage(root)
+	if err != nil || size < framesRootStorageThreshold {
+		return ""
+	}
+	return fmt.Sprintf("Storage:       %s in %s across %d runs — 'framescli clean --older-than 30d' to prune",
+		humanSize(size), root, runs)
+}
+
+// framesRootUsage returns (total bytes, run count). A "run" is a direct-child
+// directory containing run.json; other files are counted in size but not runs.
+func framesRootUsage(root string) (int64, int, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0, 0, err
+	}
+	var total int64
+	runs := 0
+	for _, e := range entries {
+		path := filepath.Join(root, e.Name())
+		if e.IsDir() {
+			if _, err := os.Stat(filepath.Join(path, "run.json")); err == nil {
+				runs++
+			}
+			size, _ := walkDirSize(path)
+			total += size
+			continue
+		}
+		if info, err := e.Info(); err == nil {
+			total += info.Size()
+		}
+	}
+	return total, runs, nil
+}
+
+func walkDirSize(dir string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if info, err := d.Info(); err == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total, err
+}
+
+func humanSize(bytes int64) string {
+	const (
+		kb = 1024
+		mb = 1024 * kb
+		gb = 1024 * mb
+	)
+	switch {
+	case bytes >= gb:
+		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(gb))
+	case bytes >= mb:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(mb))
+	case bytes >= kb:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(kb))
+	default:
+		return fmt.Sprintf("%d B", bytes)
 	}
 }
 
@@ -4519,6 +4780,8 @@ type doctorReport struct {
 	GPUAvailable             bool                          `json:"gpu_available"` // Deprecated: use GPU.Available
 	TranscribeBackend        string                        `json:"transcribe_backend"`
 	WhisperModel             string                        `json:"whisper_model"`
+	TranscribeUsesGPU        bool                          `json:"transcribe_uses_gpu"`
+	TranscribeAccelReason    string                        `json:"transcribe_accel_reason,omitempty"`
 	EstimatedTranscribeSpeed string                        `json:"estimated_transcribe_speed"`
 	TranscribeRuntimeClass   string                        `json:"transcribe_runtime_class"`
 	TranscribeCostHint       string                        `json:"transcribe_cost_hint"`
@@ -4706,6 +4969,53 @@ func doctorHasGPU() bool {
 	return detectGPU().Available
 }
 
+// transcribeAccel reports whether the active transcription backend is
+// expected to use GPU acceleration. This is intentionally separate from
+// ffmpeg/extraction GPU usage: a machine can have a CUDA GPU that ffmpeg
+// uses for frame extraction while the transcription backend (e.g.
+// openai-whisper) still runs on CPU.
+type transcribeAccel struct {
+	UsesGPU bool
+	// Reason is a user-facing explanation suitable for doctor output and
+	// headers — e.g. "no GPU detected" or
+	// "openai-whisper typically runs on CPU even with GPU hardware".
+	Reason string
+}
+
+// probeTranscribeAccel classifies expected transcription acceleration.
+// Rule-based for now: openai-whisper almost always ends up on CPU in
+// typical pip installs even on GPU hardware, so we conservatively report
+// CPU for that backend; faster-whisper on a GPU system is reported GPU
+// because its CUDA wheel install is the common case. A python-level
+// probe (ctranslate2.get_cuda_device_count, torch.cuda.is_available) can
+// replace this in a follow-up if the rule misclassifies real setups.
+//
+// backendOverride != "" is treated as an explicit choice (e.g. --transcribe-backend);
+// otherwise cfg.TranscribeBackend is used and "auto"/"" falls back to
+// PATH-based resolution so messaging matches what will actually run.
+func probeTranscribeAccel(cfg appconfig.Config, backendOverride string, hwGPUPresent bool) transcribeAccel {
+	if strings.TrimSpace(backendOverride) != "" {
+		cfg.TranscribeBackend = backendOverride
+	}
+	resolved := resolvePreviewTranscribeBackend(cfg)
+	if !hwGPUPresent {
+		return transcribeAccel{UsesGPU: false, Reason: "no GPU detected on this system"}
+	}
+	switch resolved {
+	case "faster-whisper":
+		return transcribeAccel{UsesGPU: true, Reason: "faster-whisper with GPU hardware available"}
+	case "whisper":
+		return transcribeAccel{
+			UsesGPU: false,
+			Reason:  "openai-whisper typically runs on CPU even with GPU hardware — install faster-whisper for GPU acceleration",
+		}
+	case "unavailable":
+		return transcribeAccel{UsesGPU: false, Reason: "no transcription backend detected on PATH"}
+	default:
+		return transcribeAccel{UsesGPU: false, Reason: "transcription backend could not be resolved"}
+	}
+}
+
 func collectDoctorReport(cfg appconfig.Config) doctorReport {
 	whisperModel := strings.TrimSpace(os.Getenv("WHISPER_MODEL"))
 	if whisperModel == "" {
@@ -4732,7 +5042,10 @@ func collectDoctorReport(cfg appconfig.Config) doctorReport {
 			"TRANSCRIBE_BACKEND": valueOrDash(os.Getenv("TRANSCRIBE_BACKEND")),
 		},
 	}
-	transcriptPlan := buildTranscriptPlan(0, cfg, r.GPUAvailable)
+	accel := probeTranscribeAccel(cfg, "", r.GPUAvailable)
+	r.TranscribeUsesGPU = accel.UsesGPU
+	r.TranscribeAccelReason = accel.Reason
+	transcriptPlan := buildTranscriptPlan(0, cfg, accel.UsesGPU)
 	r.TranscribeBackend = transcriptPlan.Backend
 	r.EstimatedTranscribeSpeed = transcriptPlan.RuntimeClass
 	r.TranscribeRuntimeClass = transcriptPlan.RuntimeClass
@@ -4827,8 +5140,32 @@ func printDoctorReport(r doctorReport) {
 	fmt.Println("Transcription")
 	fmt.Printf("Backend:           %s\n", valueOrDash(r.TranscribeBackend))
 	fmt.Printf("Model:             %s\n", valueOrDash(r.WhisperModel))
+	accelLabel := "CPU"
+	if r.TranscribeUsesGPU {
+		accelLabel = "GPU"
+	}
+	fmt.Printf("Accel:             %s\n", accelLabel)
+	if reason := strings.TrimSpace(r.TranscribeAccelReason); reason != "" {
+		fmt.Printf("Accel reason:      %s\n", reason)
+	}
 	fmt.Printf("Estimated Speed:   %s\n", valueOrDash(r.EstimatedTranscribeSpeed))
 	fmt.Printf("Cost Hint:         %s\n", valueOrDash(r.TranscribeCostHint))
+
+	fmt.Println("")
+	fmt.Println("Storage")
+	framesRoot := strings.TrimSpace(r.Config.FramesRoot)
+	if framesRoot == "" {
+		framesRoot = media.DefaultFramesRoot
+	}
+	fmt.Printf("Output root:       %s\n", framesRoot)
+	if size, runs, err := framesRootUsage(framesRoot); err == nil && runs > 0 {
+		fmt.Printf("Usage:             %s across %d runs\n", humanSize(size), runs)
+		if size >= framesRootStorageThreshold {
+			fmt.Println("Hint:              'framescli clean --older-than 30d' to prune old runs")
+		}
+	} else {
+		fmt.Println("Usage:             (empty or not yet created)")
+	}
 
 	fmt.Println("")
 	fmt.Println("FFmpeg")
@@ -4919,9 +5256,11 @@ func printDoctorReport(r doctorReport) {
 		}
 	}
 
-	// Whisper model recommendations
+	// Whisper model recommendations — gate on actual transcription acceleration,
+	// not just hardware GPU presence. A system can have a GPU for ffmpeg while
+	// the transcription backend (e.g. openai-whisper) still runs on CPU.
 	if r.WhisperModel == "base" {
-		if r.GPU.Available {
+		if r.TranscribeUsesGPU {
 			recommendations = append(recommendations,
 				"Upgrade to better model for GPU: WHISPER_MODEL=medium (better accuracy, still fast)")
 		} else {

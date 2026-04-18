@@ -24,7 +24,20 @@ import (
 	"time"
 )
 
-const DefaultFramesRoot = "frames"
+// DefaultFramesRoot is the user-home path `~/framescli/runs/` on first run.
+// Falls back to the cwd-relative `frames/` if the home dir can't be resolved
+// (e.g. constrained container environments). Users can override via config
+// or --out; this is only the default when nothing else is set.
+var DefaultFramesRoot = defaultFramesRoot()
+
+func defaultFramesRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "frames"
+	}
+	return filepath.Join(home, "framescli", "runs")
+}
+
 const contactSheetMaxTiles = 48
 const contactTileWidth = 420
 
@@ -34,6 +47,7 @@ type ExtractMediaOptions struct {
 	Context      context.Context
 	VideoPath    string
 	FPS          float64
+	FPSMode      string
 	OutDir       string
 	FrameFormat  string
 	JPGQuality   int
@@ -90,6 +104,7 @@ type ExtractMediaResult struct {
 type RunMetadata struct {
 	VideoPath      string  `json:"video_path"`
 	FPS            float64 `json:"fps"`
+	FPSMode        string  `json:"fps_mode,omitempty"`
 	FrameFormat    string  `json:"frame_format"`
 	ExtractedAudio bool    `json:"extracted_audio"`
 	AudioPath      string  `json:"audio_path,omitempty"`
@@ -413,6 +428,7 @@ func ExtractMedia(opts ExtractMediaOptions) (*ExtractMediaResult, error) {
 	metadata := RunMetadata{
 		VideoPath:      opts.VideoPath,
 		FPS:            opts.FPS,
+		FPSMode:        opts.FPSMode,
 		FrameFormat:    frameFormat,
 		ExtractedAudio: opts.ExtractAudio,
 		AudioPath:      audioPath,
@@ -965,6 +981,140 @@ func CreateContactSheetWithContext(ctx context.Context, framesDir string, cols i
 	}
 
 	return outFile, nil
+}
+
+// PruneFramesOptions controls selective pruning of run directories under a
+// frames root. RootDir must be a direct-parent of Run_* subdirectories. A
+// subdir counts as a run iff it contains a run.json file — this leaves stray
+// non-run content (e.g. index.json, diagnostics/) untouched.
+type PruneFramesOptions struct {
+	RootDir   string
+	OlderThan time.Duration // runs older than (now - OlderThan) become prune candidates; 0 disables this filter
+	KeepLast  int           // keep the N newest runs; 0 disables this filter
+	DryRun    bool
+	Now       time.Time // injectable for tests; zero value means time.Now()
+}
+
+// PruneCandidate describes one run dir considered for (or selected for) pruning.
+type PruneCandidate struct {
+	Path      string
+	ModTime   time.Time
+	SizeBytes int64
+	Reason    string
+}
+
+type PruneResult struct {
+	RootDir    string
+	TotalRuns  int
+	Pruned     []PruneCandidate
+	BytesFreed int64
+	DryRun     bool
+}
+
+func PruneFrames(opts PruneFramesOptions) (PruneResult, error) {
+	root := strings.TrimSpace(opts.RootDir)
+	if root == "" {
+		root = DefaultFramesRoot
+	}
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	result := PruneResult{RootDir: root, DryRun: opts.DryRun}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return result, nil
+		}
+		return result, err
+	}
+
+	type runEntry struct {
+		path    string
+		modTime time.Time
+		size    int64
+	}
+	runs := make([]runEntry, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		runDir := filepath.Join(root, e.Name())
+		if _, err := os.Stat(filepath.Join(runDir, "run.json")); err != nil {
+			continue // not a run dir
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		size, _ := dirSizeBytes(runDir)
+		runs = append(runs, runEntry{path: runDir, modTime: info.ModTime(), size: size})
+	}
+	result.TotalRuns = len(runs)
+
+	// Sort newest first so KeepLast is trivially the head of the slice.
+	sort.Slice(runs, func(i, j int) bool { return runs[i].modTime.After(runs[j].modTime) })
+
+	markedByKeep := map[string]string{}
+	if opts.KeepLast > 0 && len(runs) > opts.KeepLast {
+		for _, r := range runs[opts.KeepLast:] {
+			markedByKeep[r.path] = fmt.Sprintf("beyond --keep-last %d", opts.KeepLast)
+		}
+	}
+	markedByAge := map[string]string{}
+	if opts.OlderThan > 0 {
+		cutoff := now.Add(-opts.OlderThan)
+		for _, r := range runs {
+			if r.modTime.Before(cutoff) {
+				markedByAge[r.path] = fmt.Sprintf("older than %s", opts.OlderThan)
+			}
+		}
+	}
+
+	for _, r := range runs {
+		reason := ""
+		if m, ok := markedByKeep[r.path]; ok {
+			reason = m
+		}
+		if m, ok := markedByAge[r.path]; ok {
+			if reason != "" {
+				reason = reason + " & " + m
+			} else {
+				reason = m
+			}
+		}
+		if reason == "" {
+			continue
+		}
+		cand := PruneCandidate{Path: r.path, ModTime: r.modTime, SizeBytes: r.size, Reason: reason}
+		if !opts.DryRun {
+			if err := os.RemoveAll(r.path); err != nil {
+				return result, fmt.Errorf("prune %s: %w", r.path, err)
+			}
+		}
+		result.Pruned = append(result.Pruned, cand)
+		result.BytesFreed += r.size
+	}
+	return result, nil
+}
+
+func dirSizeBytes(dir string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
 }
 
 func CleanFrames(targetDir string) (int, error) {

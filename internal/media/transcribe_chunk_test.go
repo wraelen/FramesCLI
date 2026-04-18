@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestChunkedTranscriptionResumeSkipsCompletedChunks(t *testing.T) {
@@ -157,6 +159,232 @@ func TestChunkedTranscriptionResumesInProgressChunk(t *testing.T) {
 	}
 	if !result.Chunked || result.CompletedChunks != 3 {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestChunkedTranscriptionPropagatesTimeoutSecToInnerCall(t *testing.T) {
+	tmp := t.TempDir()
+	audioPath := writeTestAudioFile(t, tmp)
+	outDir := filepath.Join(tmp, "voice")
+
+	var capturedTimeout int
+	restore := stubChunkedTranscriptionHooks(t, 25, func(opts TranscribeOptions) (string, string, error) {
+		capturedTimeout = opts.TimeoutSec
+		index := mustChunkIndex(t, opts.OutDir)
+		writeChunkTranscriptFiles(t, opts.OutDir, fmt.Sprintf("chunk-%d", index), 0)
+		return filepath.Join(opts.OutDir, "transcript.txt"), filepath.Join(opts.OutDir, "transcript.json"), nil
+	})
+	defer restore()
+
+	_, err := TranscribeAudioWithDetails(TranscribeOptions{
+		AudioPath:        audioPath,
+		OutDir:           outDir,
+		ChunkDurationSec: 10,
+		TimeoutSec:       42,
+	})
+	if err != nil {
+		t.Fatalf("transcribe failed: %v", err)
+	}
+	if capturedTimeout != 42 {
+		t.Fatalf("expected inner opts.TimeoutSec=42, got %d", capturedTimeout)
+	}
+}
+
+func TestErrTranscribeTimeoutFormatsSecondsValue(t *testing.T) {
+	err := &ErrTranscribeTimeout{Seconds: 5}
+	if got := err.Error(); got != "transcription timed out after 5s" {
+		t.Fatalf("expected 5s message, got %q", got)
+	}
+	zero := &ErrTranscribeTimeout{Seconds: 0}
+	if got := zero.Error(); got != "transcription timed out" {
+		t.Fatalf("expected generic message for zero, got %q", got)
+	}
+}
+
+func TestShouldUseChunkedTranscriptionClipAwareFastPath(t *testing.T) {
+	tmp := t.TempDir()
+	audioPath := writeTestAudioFile(t, tmp)
+
+	cases := []struct {
+		name      string
+		duration  float64
+		chunkSec  int
+		wantChunk bool
+	}{
+		{"clip fits in one chunk", 60, 600, false},
+		{"clip exactly one chunk", 600, 600, false},
+		{"clip within overhang tolerance", 660, 600, false},
+		{"clip above overhang threshold", 661, 600, true},
+		{"clip is two full chunks", 1200, 600, true},
+		{"no chunking requested", 60, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			outDir := filepath.Join(tmp, "out-"+tc.name)
+			if err := os.MkdirAll(outDir, 0o755); err != nil {
+				t.Fatalf("mkdir failed: %v", err)
+			}
+			prev := probeTranscriptionDuration
+			probeTranscriptionDuration = func(string) (float64, error) {
+				return tc.duration, nil
+			}
+			defer func() { probeTranscriptionDuration = prev }()
+
+			got := shouldUseChunkedTranscription(TranscribeOptions{
+				AudioPath:        audioPath,
+				OutDir:           outDir,
+				ChunkDurationSec: tc.chunkSec,
+			}, tc.duration)
+			if got != tc.wantChunk {
+				t.Fatalf("duration=%v chunk=%v: got chunked=%v, want %v", tc.duration, tc.chunkSec, got, tc.wantChunk)
+			}
+		})
+	}
+}
+
+func TestShouldUseChunkedTranscriptionResumesWhenManifestExists(t *testing.T) {
+	tmp := t.TempDir()
+	audioPath := writeTestAudioFile(t, tmp)
+	outDir := filepath.Join(tmp, "voice")
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	manifestPath := transcriptionManifestPath(outDir)
+	if err := os.WriteFile(manifestPath, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write manifest failed: %v", err)
+	}
+
+	prev := probeTranscriptionDuration
+	probeTranscriptionDuration = func(string) (float64, error) {
+		return 60, nil
+	}
+	defer func() { probeTranscriptionDuration = prev }()
+
+	got := shouldUseChunkedTranscription(TranscribeOptions{
+		AudioPath:        audioPath,
+		OutDir:           outDir,
+		ChunkDurationSec: 600,
+	}, 60)
+	if !got {
+		t.Fatalf("expected chunked=true when manifest exists (resume path), even for short clip")
+	}
+}
+
+func TestTranscribeAudioWithDetailsShortClipUsesSingleShot(t *testing.T) {
+	tmp := t.TempDir()
+	audioPath := writeTestAudioFile(t, tmp)
+	outDir := filepath.Join(tmp, "voice")
+
+	var singleShotCalls int
+	restore := stubChunkedTranscriptionHooks(t, 60, func(opts TranscribeOptions) (string, string, error) {
+		singleShotCalls++
+		txt := filepath.Join(opts.OutDir, "transcript.txt")
+		jsonPath := filepath.Join(opts.OutDir, "transcript.json")
+		if err := os.MkdirAll(opts.OutDir, 0o755); err != nil {
+			return "", "", err
+		}
+		if err := os.WriteFile(txt, []byte("hello"), 0o644); err != nil {
+			return "", "", err
+		}
+		if err := os.WriteFile(jsonPath, []byte("{}"), 0o644); err != nil {
+			return "", "", err
+		}
+		return txt, jsonPath, nil
+	})
+	defer restore()
+
+	result, err := TranscribeAudioWithDetails(TranscribeOptions{
+		AudioPath:        audioPath,
+		OutDir:           outDir,
+		ChunkDurationSec: 600,
+	})
+	if err != nil {
+		t.Fatalf("transcribe failed: %v", err)
+	}
+	if singleShotCalls != 1 {
+		t.Fatalf("expected exactly one single-shot call, got %d", singleShotCalls)
+	}
+	if result.Chunked {
+		t.Fatalf("expected result.Chunked=false for short clip, got true")
+	}
+	if result.ManifestPath != "" {
+		t.Fatalf("expected no manifest for single-shot, got %q", result.ManifestPath)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "chunks")); err == nil {
+		t.Fatalf("expected no chunks/ directory for single-shot path")
+	}
+}
+
+func TestStartTranscribeHeartbeatEmitsElapsedAndCapsAt90Pct(t *testing.T) {
+	var mu sync.Mutex
+	var calls []struct {
+		stage string
+		pct   float64
+	}
+	progressFn := func(stage string, pct float64) {
+		mu.Lock()
+		calls = append(calls, struct {
+			stage string
+			pct   float64
+		}{stage, pct})
+		mu.Unlock()
+	}
+	// span 0.5 starting at base 0.25 → pct range [0.25, 0.75]; cap at base + 0.9*span = 0.70
+	stop := startTranscribeHeartbeat(progressFn, "chunk 1/2", 0.25, 0.5, 0.1 /* expectedSec tiny so we hit cap */)
+	time.Sleep(2200 * time.Millisecond)
+	stop()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) < 2 {
+		t.Fatalf("expected >= 2 heartbeat ticks within 2.2s, got %d", len(calls))
+	}
+	for _, c := range calls {
+		if c.pct < 0.25 {
+			t.Fatalf("pct dipped below base: %v", c.pct)
+		}
+		if c.pct > 0.25+0.5*0.9+1e-9 {
+			t.Fatalf("pct exceeded base+span*0.9 cap: %v", c.pct)
+		}
+		if !strings.Contains(c.stage, "elapsed") {
+			t.Fatalf("expected heartbeat stage to contain 'elapsed', got %q", c.stage)
+		}
+	}
+}
+
+func TestStartTranscribeHeartbeatNoopWhenProgressFnNil(t *testing.T) {
+	stop := startTranscribeHeartbeat(nil, "stage", 0, 1, 30)
+	// should return quickly without panicking
+	stop()
+}
+
+func TestFormatTranscribeElapsedShapes(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "00:00"},
+		{45 * time.Second, "00:45"},
+		{3 * time.Minute, "03:00"},
+		{59*time.Minute + 59*time.Second, "59:59"},
+		{1*time.Hour + 2*time.Minute + 3*time.Second, "01:02:03"},
+	}
+	for _, tc := range cases {
+		if got := formatTranscribeElapsed(tc.d); got != tc.want {
+			t.Fatalf("formatTranscribeElapsed(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
+
+func TestEstimateTranscribeSecondsConservative(t *testing.T) {
+	if got := estimateTranscribeSeconds(0); got != 60 {
+		t.Fatalf("zero-duration fallback: got %v, want 60", got)
+	}
+	if got := estimateTranscribeSeconds(10); got != 30 {
+		t.Fatalf("short clip clamped to floor: got %v, want 30", got)
+	}
+	if got := estimateTranscribeSeconds(600); got != 900 {
+		t.Fatalf("long clip uses factor: got %v, want 900", got)
 	}
 }
 
