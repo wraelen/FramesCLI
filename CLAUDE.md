@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Outstanding audits
+
+Read these before starting work — they capture known drift that hasn't been resolved yet. When you resolve a finding, update or delete the relevant audit doc so the next agent doesn't re-audit it.
+
+- `docs/audits/v0.2.6-audit.md` — post-release audit (2026-04-19). 3 open doc findings (schema enum, CHANGELOG `version` subcommand claim, `AGENT_RECIPES.md` TUI reference). MCP framing and release pipeline verified PASS.
+
 ## Build and Test Commands
 
 ### Build
