@@ -177,7 +177,7 @@ framescli clean --keep-last 10            # keep the 10 newest runs
 framescli clean --older-than 30d --dry-run # preview without deleting
 ```
 
-The no-flag form (`framescli clean`) still wipes the entire frames root for backward compatibility.
+`framescli clean` requires an explicit selector — `--older-than`, `--keep-last`, or `--all`. Passing `--all` wipes the entire frames root; pair it with `--dry-run` to preview the run count and disk usage before committing.
 
 ---
 
