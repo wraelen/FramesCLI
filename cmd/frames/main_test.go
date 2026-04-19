@@ -526,6 +526,79 @@ func TestRunPreviewResultAutoFPS(t *testing.T) {
 	}
 }
 
+func TestRunExtractWorkflowResultAutoFPS(t *testing.T) {
+	requireFFmpegToolsMainTest(t)
+	tmp := t.TempDir()
+	video := filepath.Join(tmp, "sample.mp4")
+	cmd := exec.Command("ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=24", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=16000", "-t", "5", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", video)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed generating sample video: %v\n%s", err, string(out))
+	}
+	res, err := runExtractWorkflowResult(context.Background(), video, 0, extractWorkflowOptions{
+		OutDir:      filepath.Join(tmp, "out"),
+		FrameFormat: "png",
+		FPSExplicit: true,
+		NoSheet:     true,
+		SheetCols:   6,
+	}, false)
+	if err != nil {
+		t.Fatalf("runExtractWorkflowResult returned error: %v", err)
+	}
+	if res.FPS != 8 {
+		t.Fatalf("expected auto fps=8, got %v", res.FPS)
+	}
+	if res.FPSMode != "auto" {
+		t.Fatalf("expected fps_mode=auto, got %q", res.FPSMode)
+	}
+}
+
+func TestMCPFPSSpec(t *testing.T) {
+	t.Run("unmarshal", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			raw      string
+			wantFPS  float64
+			explicit bool
+			wantErr  bool
+		}{
+			{name: "number", raw: `2.5`, wantFPS: 2.5, explicit: true},
+			{name: "zero", raw: `0`, wantFPS: 0, explicit: true},
+			{name: "auto", raw: `"auto"`, wantFPS: 0, explicit: true},
+			{name: "numeric-string", raw: `"3"`, wantFPS: 3, explicit: true},
+			{name: "invalid", raw: `"bad"`, wantErr: true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				var spec mcpFPSSpec
+				err := json.Unmarshal([]byte(tc.raw), &spec)
+				if tc.wantErr {
+					if err == nil {
+						t.Fatal("expected error")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if spec.Value != tc.wantFPS || spec.Explicit != tc.explicit {
+					t.Fatalf("unexpected spec: %+v", spec)
+				}
+			})
+		}
+	})
+
+	t.Run("resolve", func(t *testing.T) {
+		fps, explicit := resolveMCPFPS(mcpFPSSpec{Value: 0, Explicit: true}, 4)
+		if fps != 0 || !explicit {
+			t.Fatalf("expected explicit auto fps=0, got fps=%v explicit=%v", fps, explicit)
+		}
+		fps, explicit = resolveMCPFPS(mcpFPSSpec{}, 4)
+		if fps != 4 || explicit {
+			t.Fatalf("expected fallback fps=4 explicit=false, got fps=%v explicit=%v", fps, explicit)
+		}
+	})
+}
+
 func TestRunExtractWorkflowResultNoAudioVoiceFailsEarly(t *testing.T) {
 	requireFFmpegToolsMainTest(t)
 	video := makeNoAudioVideoMainTest(t)
@@ -964,6 +1037,40 @@ func TestFindLastRunArtifactUsesIndexForSpecificArtifacts(t *testing.T) {
 	}
 	if !strings.HasSuffix(target, filepath.Join("voice", "transcript.json")) {
 		t.Fatalf("expected transcript json path, got %q", target)
+	}
+}
+
+func TestResolveSheetTarget(t *testing.T) {
+	root := t.TempDir()
+	runPath := writeArtifactRunFixture(t, root, "Run_1", artifactFixtureOptions{})
+
+	framesDir, outFile, autoDetected, err := resolveSheetTarget(runPath, "")
+	if err != nil {
+		t.Fatalf("resolveSheetTarget returned error: %v", err)
+	}
+	if !autoDetected {
+		t.Fatalf("expected run dir auto-detection for %s", runPath)
+	}
+	if want := filepath.Join(runPath, "images"); framesDir != want {
+		t.Fatalf("expected frames dir %q, got %q", want, framesDir)
+	}
+	if want := filepath.Join(runPath, "images", "sheets", "contact-sheet.png"); outFile != want {
+		t.Fatalf("expected default out file %q, got %q", want, outFile)
+	}
+
+	explicitOut := filepath.Join(root, "sheet.png")
+	framesDir, outFile, autoDetected, err = resolveSheetTarget(filepath.Join(runPath, "images"), explicitOut)
+	if err != nil {
+		t.Fatalf("resolveSheetTarget(images) returned error: %v", err)
+	}
+	if autoDetected {
+		t.Fatalf("did not expect auto-detection for direct images dir")
+	}
+	if want := filepath.Join(runPath, "images"); framesDir != want {
+		t.Fatalf("expected direct images dir %q, got %q", want, framesDir)
+	}
+	if outFile != explicitOut {
+		t.Fatalf("expected explicit out file %q, got %q", explicitOut, outFile)
 	}
 }
 

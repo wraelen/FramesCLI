@@ -269,13 +269,13 @@ Full reference: run `framescli <command> --help` (every subcommand has complete 
 ## Documentation
 
 **Integration:**
-- [Agent Integration](docs/AGENT_INTEGRATION.md) - MCP tools, JSON schemas
-- [Agent Recipes](docs/AGENT_RECIPES.md) - Copy-paste workflows
+- [Agent Integration](docs/AGENT_INTEGRATION.md) - Setup, contracts, MCP/CLI behavior
+- [Agent Recipes](docs/AGENT_RECIPES.md) - Copy-paste task flows
+- [Homebrew Release Guide](docs/HOMEBREW_SETUP.md) - Canonical Homebrew maintainer doc
 
 **Development:**
 - [Contributing](CONTRIBUTING.md) - How to contribute
 - [Architecture](CLAUDE.md) - Build, test, internals
-- [Roadmap](docs/NEXT_PHASE_ROADMAP.md) - Planned features
 
 ---
 

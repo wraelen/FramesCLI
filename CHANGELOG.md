@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.6] - 2026-04-19
+
+Patch release for the shipped v0.2.5 regressions plus documentation cleanup.
+
+### Fixed
+- **MCP auto-fps now behaves like the CLI path.** MCP `preview`, `extract`, and `extract_batch` now accept `fps` as a number, `0`, or `"auto"`. Explicit `0` is treated as auto mode instead of silently falling back to config default fps, and MCP no longer rejects `"auto"` with a Go JSON unmarshal error.
+- **Auto-selected fps is visible in MCP extraction results.** `extract` results now include `fps_mode: "auto"` when auto sampling was requested, matching the preview path and the run metadata.
+- **`framescli sheet <run-dir>` now does the obvious thing.** The command auto-detects a run directory's `images/` subdirectory and writes the contact sheet to `images/sheets/contact-sheet.png` by default.
+- **`scripts/mcp-smoke.sh` no longer requires ripgrep.** The smoke check now uses `grep -Eq`, so it runs on systems that do not have `rg`.
+
+### Documentation
+- **Canonicalized Homebrew docs.** `docs/HOMEBREW_SETUP.md` now reflects the real GoReleaser-plus-tap workflow, and `homebrew/README.md` is reduced to a pointer so there is one source of truth.
+- **Collapsed agent doc duplication.** `docs/AGENT_INTEGRATION.md` is now the setup/contract document, while `docs/AGENT_RECIPES.md` is kept as the copy-paste cookbook.
+- **Corrected schema drift.** The documented automation envelope now matches the real fields and values (`ended_at`, `duration_ms`, `status: error`), and the schema docs now state that MCP tool schemas are sourced from `tools/list` / `cmd/frames/main.go` rather than checked-in per-tool files.
+
 ## [0.2.4] - 2026-04-18
 
 Follow-up polish driven by an external second-pass debug pack against v0.2.3.

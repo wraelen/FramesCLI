@@ -1,17 +1,9 @@
 # FramesCLI Agent Recipes
 
-## Table of Contents
+This page contains copy-paste flows. For setup rules, response shapes, and path
+safety, see [AGENT_INTEGRATION.md](AGENT_INTEGRATION.md).
 
-1. [OpenClaw MCP Recipe](#openclaw-mcp-recipe)
-2. [CLI JSON Fast Path](#cli-json-fast-path)
-3. [Batch Debug Archive](#batch-debug-archive)
-4. [Pipeline Notes](#pipeline-notes)
-
-This page provides copy-paste workflows for coding agents, MCP clients, and OpenClaw.
-
-## OpenClaw MCP Recipe
-
-Use this when the agent can connect to a stdio MCP server and should stay on structured tool calls instead of shelling out directly.
+## MCP Happy Path
 
 Minimal MCP config:
 
@@ -26,16 +18,15 @@ Minimal MCP config:
 }
 ```
 
-Recommended tool sequence:
+Recommended call sequence:
 
 1. `doctor`
 2. `prefs_set`
 3. `preview`
 4. `extract`
 5. `get_run_artifacts`
-6. `get_latest_artifacts` only when the agent needs the compact latest-path map instead of full indexed run metadata
 
-Example `prefs_set` payload:
+Example `prefs_set`:
 
 ```json
 {
@@ -44,12 +35,12 @@ Example `prefs_set` payload:
 }
 ```
 
-Example `preview` payload:
+Example `preview` using automatic fps:
 
 ```json
 {
   "input": "recent",
-  "fps": 2,
+  "fps": "auto",
   "format": "jpg",
   "mode": "both"
 }
@@ -62,39 +53,23 @@ Example `preview` response excerpt:
   "command": "preview",
   "status": "success",
   "data": {
-    "target_fps": 2,
+    "target_fps": 8,
+    "fps_mode": "auto",
     "format": "jpg",
     "estimate": {
-      "frame_count": 2400,
-      "disk_summary": "~137-305 MB for extracted frames + sheet",
-      "disk_profiles": [
-        {
-          "label": "selected",
-          "format": "jpg",
-          "fps": 2,
-          "frame_count": 2400,
-          "disk_summary": "~137-305 MB",
-          "selected": true
-        }
-      ],
-      "transcript": {
-        "enabled": true,
-        "backend": "faster-whisper",
-        "runtime_class": "moderate",
-        "cost_hint": "transcript runtime depends on backend, model, and local hardware"
-      },
-      "warnings": []
+      "frame_count": 96,
+      "disk_summary": "~6-14 MB for extracted frames + sheet"
     }
   }
 }
 ```
 
-Example `extract` payload:
+Example `extract`:
 
 ```json
 {
   "input": "recent",
-  "fps": 2,
+  "fps": 0,
   "voice": true,
   "format": "jpg",
   "preset": "balanced",
@@ -102,15 +77,15 @@ Example `extract` payload:
 }
 ```
 
-Example `get_latest_artifacts` payload:
+Notes:
 
-```json
-{
-  "root": "/Users/me/frames-out"
-}
-```
+- MCP accepts `fps` as a positive number, `0`, or `"auto"`
+- `fps: 0` and `fps: "auto"` both request automatic sampling
+- `extract` now returns `fps_mode: "auto"` when auto sampling is used
 
-Example `get_run_artifacts` payloads:
+## Artifact Lookup
+
+Preferred indexed lookup:
 
 ```json
 {
@@ -119,6 +94,8 @@ Example `get_run_artifacts` payloads:
 }
 ```
 
+Recent runs lookup:
+
 ```json
 {
   "root": "/Users/me/frames-out",
@@ -126,7 +103,22 @@ Example `get_run_artifacts` payloads:
 }
 ```
 
-Resume transcription for a completed run:
+Compact latest-only lookup:
+
+```json
+{
+  "root": "/Users/me/frames-out"
+}
+```
+
+Use `get_run_artifacts` when the agent needs run metadata. Use
+`get_latest_artifacts` when the agent only needs the compact path map under
+`data.artifacts`.
+
+## Resume Transcription
+
+Use `transcribe_run` when a run already contains extracted audio but the
+transcript is missing, incomplete, or timed out:
 
 ```json
 {
@@ -135,11 +127,12 @@ Resume transcription for a completed run:
 }
 ```
 
-Call this with the `transcribe_run` MCP tool when a run already has extracted audio under `voice/` but the transcript is missing or incomplete. Chunked runs persist `voice/transcription-manifest.json` and resume from any chunk still marked `pending`, `in_progress`, or `failed`.
+Chunked runs persist `voice/transcription-manifest.json` and resume any chunk
+still marked `pending`, `in_progress`, or `failed`.
 
 ## CLI JSON Fast Path
 
-Use this for agents that can run shell commands and parse JSON output.
+Use this when the agent only has shell access:
 
 ```bash
 framescli doctor --json
@@ -148,41 +141,30 @@ framescli extract /path/to/recording.mp4 --voice --transcribe-timeout 300 --json
 framescli artifacts latest --json
 ```
 
-Expected pattern:
+Practical pattern:
 
-1. `doctor` verifies local toolchain.
-2. `preview` estimates frame count, disk ranges, transcript cost hints, resolved preset defaults, and guardrails before running extraction.
-3. `extract` returns structured artifact paths.
-4. `artifacts` returns the stable indexed view for the latest or a specific run; `open-last` and `copy-last` remain useful for direct single-path retrieval such as `transcript-json`, `transcript-srt`, `manifest`, `metadata-csv`, or `frames-zip`.
+1. `doctor --json` verifies dependencies
+2. `preview --json` estimates cost and guardrails
+3. `extract --json` performs the work
+4. `artifacts --json` returns the indexed run view
 
-Contract notes:
-
-- `preview` is advisory. It reports transcript workload estimates, but it does not guarantee the source actually contains an audio stream.
-- Prefer explicit workflow presets for long inputs:
-  - `laptop-safe` => `1fps`, `jpg`, media preset `safe`, transcript chunking `300s`
-  - `balanced` => `4fps`, `png`, media preset `balanced`, transcript chunking `600s`
-  - `high-fidelity` => `8fps`, `png`, media preset `fast`, transcript chunking `900s`
-- Expensive workload blocks are measurable and explicit. `extract` requires `--allow-expensive` when any blocking threshold is crossed:
-  - estimated frames `>= 40000`
-  - estimated extracted frame disk usage `>= 4 GB`
-  - duration `>= 3 hours`
-  - CPU-only `slow`/`heavy` transcript path on recordings `>= 45 minutes` without chunking
-- Warning thresholds start at `20000` estimated frames, `2 GB` estimated disk, `2 hours` duration, and CPU-only `slow`/`heavy` transcript paths at `30 minutes`.
-- Explicit flags still override preset defaults. Use `--fps`, `--format`, or `--chunk-duration` when an agent intentionally needs a different tradeoff.
-- Configured `performance-mode` applies preset sampling/format implicitly when `default-fps` and `default-format` are still at the stock defaults; custom config defaults continue to win otherwise.
-- `extract --voice` and `transcribe-run` fail fast on silent inputs with `requested audio output, but video has no audio stream: <path>`.
-- `open-last` and `copy-last` accept `run`, `transcript`, `transcript-json`, `transcript-srt`, `transcript-vtt`, `sheet`, `log`, `metadata`, `frames`, `manifest`, `metadata-csv`, `frames-zip`, and `audio`.
-- JSON and MCP failures keep stable top-level codes while also exposing additive recovery metadata via `error.class`, `error.recovery`, `error.retryable`, or `error.data.*` on MCP responses.
-
-If extraction succeeded but transcription timed out, resume later with:
+If transcription timed out:
 
 ```bash
 framescli transcribe-run /path/to/run --chunk-duration 600 --json
 ```
 
-## Batch Debug Archive
+Important contract notes:
 
-For incident or debug sessions with many recordings:
+- `doctor --json` is a standalone report, not the common automation envelope
+- `preview` is advisory and does not guarantee the source contains audio
+- `extract --voice` and `transcribe-run` fail fast on silent inputs
+- `open-last` remains useful for direct single-path retrieval such as
+  `transcript-json`, `manifest`, `metadata-csv`, or `frames-zip`
+
+## Batch Processing
+
+For incident or archive processing:
 
 ```bash
 framescli extract-batch "recordings/*.mp4" \
@@ -192,20 +174,21 @@ framescli extract-batch "recordings/*.mp4" \
   --json
 ```
 
-Recommended follow-up:
+Suggested follow-up:
 
 ```bash
 framescli index frames --out frames/index.json
 framescli tui --root frames
 ```
 
-The artifact index lives at `<frames_root>/index.json`, is refreshed after successful `extract` and `transcribe-run` operations, and can be rebuilt explicitly with `framescli index` if runs were edited manually on disk.
+The index at `<frames_root>/index.json` is refreshed after successful
+`extract` and `transcribe-run` operations and can be rebuilt with
+`framescli index` if runs were edited manually.
 
-## Pipeline Notes
+## Operational Notes
 
-- For agent pipelines, prefer `--transcribe-timeout <seconds>` on `framescli extract --voice` so a slow transcription does not block the entire run forever.
-- On CPU-only machines, Whisper `base` and larger models can be very slow. FramesCLI warns on CPU use and auto-selects `tiny` when the model would otherwise fall back to the default `base`.
-- On GPU-equipped machines, larger models are much more practical, especially for longer recordings.
-- MCP long-running tools emit `notifications/message` heartbeats every 10 seconds so OpenClaw and other clients can surface progress while extraction or resume transcription is still running.
-- Keep paths local. MCP path access is restricted to allowed roots from config and the current workspace.
-- The MCP stdio harness lives in `cmd/frames/mcp_integration_test.go`; use `go test ./cmd/frames` for the full package or `go test ./cmd/frames -run 'TestMCPServer|TestMCPHelperProcess'` when focusing on MCP behavior only.
+- Prefer `preview` before long recordings
+- Prefer `--transcribe-timeout <seconds>` in unattended agent flows
+- `laptop-safe` is the safest preset for very long CPU-bound runs
+- MCP long-running tools emit heartbeat notifications every 10 seconds
+- The MCP harness lives in `cmd/frames/mcp_integration_test.go`

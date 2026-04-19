@@ -420,6 +420,7 @@ type extractWorkflowResult struct {
 	SourceNote       string              `json:"source_note,omitempty"`
 	VideoInfo        media.VideoInfo     `json:"video_info"`
 	FPS              float64             `json:"fps"`
+	FPSMode          string              `json:"fps_mode,omitempty"`
 	FrameFormat      string              `json:"frame_format"`
 	OutDir           string              `json:"out_dir"`
 	FrameCount       int                 `json:"frame_count"`
@@ -984,6 +985,7 @@ func runExtractWorkflowResult(ctx context.Context, videoInput string, fps float6
 	}
 	estimate := estimateOutputs(videoInfo, resolved.FPS, resolved.FrameFormat, previewMode, transcriptPlan, resolved.ChunkDurationSec)
 	result.FPS = resolved.FPS
+	result.FPSMode = resolved.FPSMode
 	result.VideoInfo = videoInfo
 	result.Preset = resolved.Preset
 	result.MediaPreset = resolved.MediaPreset
@@ -3858,7 +3860,7 @@ func handleMCPRequest(req mcpRequest) *mcpResponse {
 					"type": "object",
 					"properties": map[string]any{
 						"input":          map[string]any{"type": "string"},
-						"fps":            map[string]any{"type": "number"},
+						"fps":            mcpFPSSchema(),
 						"format":         map[string]any{"type": "string"},
 						"mode":           map[string]any{"type": "string"},
 						"preset":         map[string]any{"type": "string"},
@@ -3875,7 +3877,7 @@ func handleMCPRequest(req mcpRequest) *mcpResponse {
 						"input":               map[string]any{"type": "string"},
 						"url":                 map[string]any{"type": "string"},
 						"no_cache":            map[string]any{"type": "boolean"},
-						"fps":                 map[string]any{"type": "number"},
+						"fps":                 mcpFPSSchema(),
 						"voice":               map[string]any{"type": "boolean"},
 						"format":              map[string]any{"type": "string"},
 						"out":                 map[string]any{"type": "string"},
@@ -3902,7 +3904,7 @@ func handleMCPRequest(req mcpRequest) *mcpResponse {
 					"type": "object",
 					"properties": map[string]any{
 						"inputs":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-						"fps":                 map[string]any{"type": "number"},
+						"fps":                 mcpFPSSchema(),
 						"voice":               map[string]any{"type": "boolean"},
 						"format":              map[string]any{"type": "string"},
 						"preset":              map[string]any{"type": "string"},
@@ -4010,6 +4012,60 @@ func decodeMCPArgs(argsRaw json.RawMessage, target any) error {
 	return nil
 }
 
+type mcpFPSSpec struct {
+	Value    float64
+	Explicit bool
+}
+
+func (s *mcpFPSSpec) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*s = mcpFPSSpec{}
+		return nil
+	}
+	s.Explicit = true
+	if trimmed[0] == '"' {
+		var raw string
+		if err := json.Unmarshal(trimmed, &raw); err != nil {
+			return err
+		}
+		fps, err := parseExtractFPSSpec(raw)
+		if err != nil {
+			return fmt.Errorf("invalid fps value. use a positive number, 0, or auto")
+		}
+		s.Value = fps
+		return nil
+	}
+	var raw float64
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
+		return err
+	}
+	if raw < 0 {
+		return fmt.Errorf("invalid fps value. use a positive number, 0, or auto")
+	}
+	s.Value = raw
+	return nil
+}
+
+func resolveMCPFPS(spec mcpFPSSpec, fallback float64) (float64, bool) {
+	if spec.Explicit {
+		return spec.Value, true
+	}
+	if spec.Value <= 0 {
+		return fallback, false
+	}
+	return spec.Value, false
+}
+
+func mcpFPSSchema() map[string]any {
+	return map[string]any{
+		"anyOf": []map[string]any{
+			{"type": "number", "minimum": 0},
+			{"type": "string", "enum": []string{"auto"}},
+		},
+	}
+}
+
 func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -4026,12 +4082,12 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		return buildAutomationEnvelope("doctor", started, "success", collectDoctorReport(appCfg), nil), nil
 	case "preview":
 		var args struct {
-			Input         string  `json:"input"`
-			FPS           float64 `json:"fps"`
-			Format        string  `json:"format"`
-			Mode          string  `json:"mode"`
-			Preset        string  `json:"preset"`
-			ChunkDuration int     `json:"chunk_duration"`
+			Input         string     `json:"input"`
+			FPS           mcpFPSSpec `json:"fps"`
+			Format        string     `json:"format"`
+			Mode          string     `json:"mode"`
+			Preset        string     `json:"preset"`
+			ChunkDuration int        `json:"chunk_duration"`
 		}
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
@@ -4053,7 +4109,8 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			args.Preset = appCfg.PerformanceMode
 		}
 		started := time.Now()
-		data, err := runPreviewResult(args.Input, args.FPS, args.Format, args.Mode, args.Preset, args.ChunkDuration, args.FPS > 0, strings.TrimSpace(args.Format) != "", presetExplicit, args.ChunkDuration > 0)
+		requestedFPS, fpsExplicit := resolveMCPFPS(args.FPS, 0)
+		data, err := runPreviewResult(args.Input, requestedFPS, args.Format, args.Mode, args.Preset, args.ChunkDuration, fpsExplicit, strings.TrimSpace(args.Format) != "", presetExplicit, args.ChunkDuration > 0)
 		if err != nil {
 			if ctx != nil && ctx.Err() != nil {
 				return nil, ctx.Err()
@@ -4063,26 +4120,26 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		return buildAutomationEnvelope("preview", started, "success", data, nil), nil
 	case "extract":
 		var args struct {
-			Input              string  `json:"input"`
-			URL                string  `json:"url"`
-			NoCache            bool    `json:"no_cache"`
-			FPS                float64 `json:"fps"`
-			Voice              bool    `json:"voice"`
-			Format             string  `json:"format"`
-			Out                string  `json:"out"`
-			HWAccel            string  `json:"hwaccel"`
-			Preset             string  `json:"preset"`
-			From               string  `json:"from"`
-			To                 string  `json:"to"`
-			FrameStart         int     `json:"frame_start"`
-			FrameEnd           int     `json:"frame_end"`
-			EveryN             int     `json:"every_n"`
-			NameTemplate       string  `json:"name_template"`
-			ChunkDuration      int     `json:"chunk_duration"`
-			AllowExpensive     bool    `json:"allow_expensive"`
-			TranscribeBackend  string  `json:"transcribe_backend"`
-			TranscribeBin      string  `json:"transcribe_bin"`
-			TranscribeLanguage string  `json:"transcribe_language"`
+			Input              string     `json:"input"`
+			URL                string     `json:"url"`
+			NoCache            bool       `json:"no_cache"`
+			FPS                mcpFPSSpec `json:"fps"`
+			Voice              bool       `json:"voice"`
+			Format             string     `json:"format"`
+			Out                string     `json:"out"`
+			HWAccel            string     `json:"hwaccel"`
+			Preset             string     `json:"preset"`
+			From               string     `json:"from"`
+			To                 string     `json:"to"`
+			FrameStart         int        `json:"frame_start"`
+			FrameEnd           int        `json:"frame_end"`
+			EveryN             int        `json:"every_n"`
+			NameTemplate       string     `json:"name_template"`
+			ChunkDuration      int        `json:"chunk_duration"`
+			AllowExpensive     bool       `json:"allow_expensive"`
+			TranscribeBackend  string     `json:"transcribe_backend"`
+			TranscribeBin      string     `json:"transcribe_bin"`
+			TranscribeLanguage string     `json:"transcribe_language"`
 		}
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
@@ -4108,12 +4165,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 				return nil, err
 			}
 		}
-		fpsExplicit := args.FPS > 0
+		requestedFPS, fpsExplicit := resolveMCPFPS(args.FPS, appCfg.DefaultFPS)
 		formatExplicit := strings.TrimSpace(args.Format) != ""
 		presetExplicit := strings.TrimSpace(args.Preset) != ""
-		if args.FPS <= 0 {
-			args.FPS = appCfg.DefaultFPS
-		}
 		if !formatExplicit {
 			args.Format = appCfg.DefaultFormat
 		}
@@ -4143,7 +4197,7 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			videoInput = args.URL
 		}
 
-		res, err := runExtractWorkflowResult(ctx, videoInput, args.FPS, extractWorkflowOptions{
+		res, err := runExtractWorkflowResult(ctx, videoInput, requestedFPS, extractWorkflowOptions{
 			URL:                args.URL,
 			NoCache:            args.NoCache,
 			OutDir:             args.Out,
@@ -4179,16 +4233,16 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		return buildAutomationEnvelope("extract", started, "success", res, nil), nil
 	case "extract_batch":
 		var args struct {
-			Inputs             []string `json:"inputs"`
-			FPS                float64  `json:"fps"`
-			Voice              bool     `json:"voice"`
-			Format             string   `json:"format"`
-			Preset             string   `json:"preset"`
-			ChunkDuration      int      `json:"chunk_duration"`
-			AllowExpensive     bool     `json:"allow_expensive"`
-			TranscribeBackend  string   `json:"transcribe_backend"`
-			TranscribeBin      string   `json:"transcribe_bin"`
-			TranscribeLanguage string   `json:"transcribe_language"`
+			Inputs             []string   `json:"inputs"`
+			FPS                mcpFPSSpec `json:"fps"`
+			Voice              bool       `json:"voice"`
+			Format             string     `json:"format"`
+			Preset             string     `json:"preset"`
+			ChunkDuration      int        `json:"chunk_duration"`
+			AllowExpensive     bool       `json:"allow_expensive"`
+			TranscribeBackend  string     `json:"transcribe_backend"`
+			TranscribeBin      string     `json:"transcribe_bin"`
+			TranscribeLanguage string     `json:"transcribe_language"`
 		}
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
@@ -4228,10 +4282,7 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		if len(args.Inputs) == 0 {
 			return nil, fmt.Errorf("extract_batch requires inputs (or configured agent_input_dirs)")
 		}
-		fpsExplicit := args.FPS > 0
-		if args.FPS <= 0 {
-			args.FPS = appCfg.DefaultFPS
-		}
+		requestedFPS, fpsExplicit := resolveMCPFPS(args.FPS, appCfg.DefaultFPS)
 		formatExplicit := strings.TrimSpace(args.Format) != ""
 		presetExplicit := strings.TrimSpace(args.Preset) != ""
 		if !formatExplicit {
@@ -4259,7 +4310,7 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 				stem := strings.TrimSuffix(filepath.Base(v), filepath.Ext(v))
 				outDir = filepath.Join(appCfg.AgentOutputRoot, stem+"-"+time.Now().UTC().Format("20060102-150405"))
 			}
-			res, err := runExtractWorkflowResult(ctx, v, args.FPS, extractWorkflowOptions{
+			res, err := runExtractWorkflowResult(ctx, v, requestedFPS, extractWorkflowOptions{
 				Voice:              args.Voice,
 				FrameFormat:        args.Format,
 				FormatExplicit:     formatExplicit,
@@ -4513,17 +4564,65 @@ func writeMCPMessage(out io.Writer, resp *mcpResponse) error {
 	return err
 }
 
+func sheetDirHasFrames(target string) (bool, error) {
+	patterns := []string{"*.png", "*.jpg", "*.jpeg"}
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(filepath.Join(target, pattern))
+		if err != nil {
+			return false, err
+		}
+		for _, match := range matches {
+			base := strings.ToLower(filepath.Base(match))
+			if strings.Contains(base, "contact-sheet") {
+				continue
+			}
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func resolveSheetTarget(target string, outFile string) (string, string, bool, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "", "", false, fmt.Errorf("frames dir is required")
+	}
+	if hasFrames, err := sheetDirHasFrames(target); err != nil {
+		return "", "", false, err
+	} else if hasFrames {
+		return target, outFile, false, nil
+	}
+	imagesDir := filepath.Join(target, "images")
+	if hasFrames, err := sheetDirHasFrames(imagesDir); err != nil {
+		return "", "", false, err
+	} else if hasFrames {
+		if strings.TrimSpace(outFile) == "" {
+			outFile = filepath.Join(imagesDir, "sheets", "contact-sheet.png")
+		}
+		return imagesDir, outFile, true, nil
+	}
+	return target, outFile, false, nil
+}
+
 func sheetCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "sheet <framesDir>",
-		Short: "Build a contact sheet from extracted frames",
+		Use:   "sheet <runDir|imagesDir>",
+		Short: "Build a contact sheet from extracted frames or a run directory",
 		Args:  cobra.MinimumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			cols, _ := cmd.Flags().GetInt("cols")
 			outFile, _ := cmd.Flags().GetString("out")
 			verbose, _ := cmd.Flags().GetBool("verbose")
+			framesDir, outFile, autoDetected, err := resolveSheetTarget(args[0], outFile)
+			if err != nil {
+				failf("Contact sheet failed: %v\n", err)
+				return
+			}
+			if autoDetected {
+				fmt.Printf("Using extracted frames in %s\n", framesDir)
+			}
 			fmt.Println("Generating contact sheet...")
-			result, err := media.CreateContactSheet(args[0], cols, outFile, verbose)
+			result, err := media.CreateContactSheet(framesDir, cols, outFile, verbose)
 			if err != nil {
 				failf("Contact sheet failed: %v\n", err)
 				return

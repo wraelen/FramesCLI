@@ -1,146 +1,157 @@
-# Homebrew Distribution Setup
+# FramesCLI Homebrew Release Guide
 
-This document explains how FramesCLI's Homebrew distribution works and how to publish releases.
+This is the canonical Homebrew document for FramesCLI. The short note in
+`homebrew/README.md` exists only to point here.
 
-## Overview
+## Current Model
 
-FramesCLI uses **goreleaser** to automatically generate and publish Homebrew formulas. When you create a new GitHub release, goreleaser will:
+FramesCLI does not keep a hand-maintained formula in this repo. The release flow
+is:
 
-1. Build binaries for macOS (Intel + Apple Silicon), Linux, and Windows
-2. Create release archives with checksums
-3. Generate a Homebrew formula
-4. Push the formula to `wraelen/homebrew-tap`
+1. Tag a new release in `wraelen/FramesCLI`
+2. GitHub Actions runs `.github/workflows/release.yml`
+3. GoReleaser builds archives, publishes the GitHub release, and generates the
+   Homebrew formula from `.goreleaser.yml`
+4. The formula is pushed to `wraelen/homebrew-tap` at `Formula/framescli.rb`
+5. The workflow verifies that the tap formula version matches the tag before
+   reporting success
 
-## One-Time Setup
-
-### 1. Create Homebrew Tap Repository
-
-Create a new GitHub repository called `homebrew-tap`:
-
-```bash
-# On GitHub, create: wraelen/homebrew-tap
-# Keep it public
-# Initialize with a README
-```
-
-### 2. Set GitHub Token
-
-Goreleaser needs a GitHub token to push the formula. Add this to your environment or GitHub Actions:
+User install command:
 
 ```bash
-export GITHUB_TOKEN=ghp_your_token_here
-```
-
-**For GitHub Actions**, add the token as a secret:
-- Go to Settings → Secrets and variables → Actions
-- Add `GITHUB_TOKEN` with a Personal Access Token that has `repo` and `workflow` permissions
-
-## Publishing a Release
-
-### Method 1: GitHub Actions (Recommended)
-
-We'll set up a GitHub Actions workflow that automatically runs goreleaser on new tags.
-
-**Coming soon:** See `.github/workflows/release.yml` (not yet created)
-
-### Method 2: Manual Release
-
-```bash
-# 1. Create and push a tag
-git tag -a v0.2.2 -m "Release v0.2.2"
-git push origin v0.2.2
-
-# 2. Run goreleaser (requires GITHUB_TOKEN env var)
-export GITHUB_TOKEN=ghp_your_token_here
-goreleaser release --clean
-
-# This will:
-# - Build binaries
-# - Create GitHub release
-# - Push Homebrew formula to wraelen/homebrew-tap
-```
-
-### Method 3: Test Locally (Dry Run)
-
-```bash
-# Test without publishing
-goreleaser release --snapshot --clean
-```
-
-## User Installation
-
-Once published, users can install via:
-
-```bash
-# Add the tap
-brew tap wraelen/tap
-
-# Install framescli
-brew install framescli
-
-# Or in one command
 brew install wraelen/tap/framescli
 ```
 
-## Homebrew Formula Location
+Tap repo:
 
-The formula will be published to:
-- Repository: `https://github.com/wraelen/homebrew-tap`
-- File: `Formula/framescli.rb`
+- Source: `https://github.com/wraelen/homebrew-tap`
+- Formula path: `Formula/framescli.rb`
+- Tap alias: `wraelen/tap`
 
-Users can also install from the generated formula directly:
-```bash
-brew install https://raw.githubusercontent.com/wraelen/homebrew-tap/main/Formula/framescli.rb
-```
+## Release Prerequisites
 
-## Updating the Formula
+Before cutting a release, make sure all of these are true:
 
-Goreleaser automatically updates the formula on each release. You don't need to manually edit the formula file.
+- `go test ./...` is green
+- `CHANGELOG.md` has an entry for the new version
+- `.github/workflows/release.yml` still matches the intended release behavior
+- `.goreleaser.yml` still points at `wraelen/homebrew-tap` and writes the
+  formula under `Formula/`
+- GitHub Actions has `HOMEBREW_TAP_TOKEN` configured with `contents:write` on
+  `wraelen/homebrew-tap`
 
-To update:
-1. Create a new git tag (e.g., `v0.2.3`)
-2. Run `goreleaser release`
-3. Formula is automatically updated with new version and checksums
+Without `HOMEBREW_TAP_TOKEN`, the GitHub release can succeed while the Homebrew
+formula push fails. The workflow now explicitly checks the tap version to catch
+that failure mode.
 
-## Dependencies
+## Cutting a Release
 
-The formula declares:
-- **Required**: `ffmpeg` (for frame extraction)
-- **Optional**: `yt-dlp` (for URL downloads)
-
-Users will see a caveat message after installation guiding them to install optional dependencies.
-
-## Submitting to homebrew-core (Future)
-
-Once FramesCLI has:
-- 75+ GitHub stars
-- 30+ forks
-- Stable release history
-- Active maintenance
-
-We can submit to `homebrew-core` for inclusion in the main Homebrew repository:
+Recommended sequence for a patch release:
 
 ```bash
-# Users would then install with just:
-brew install framescli  # No tap needed
+go test ./...
+git push origin main
+git tag -a v0.2.6 -m "FramesCLI v0.2.6"
+git push origin v0.2.6
 ```
 
-Submission process: https://docs.brew.sh/Adding-Software-to-Homebrew
+What happens after the tag push:
+
+- GitHub Actions runs the `Release` workflow
+- The workflow runs the full Go test suite
+- GoReleaser publishes release archives plus `checksums.txt`
+- GoReleaser updates `wraelen/homebrew-tap/Formula/framescli.rb`
+- The workflow fetches the published formula from the tap and fails if its
+  `version` does not match the tag
+
+## Local Dry Run
+
+Use a snapshot build before tagging if you want to validate the release layout
+locally:
+
+```bash
+export HOMEBREW_TAP_TOKEN=dummy
+goreleaser release --snapshot --clean
+./scripts/release-verify.sh --source dist --dist-dir ./dist
+```
+
+Notes:
+
+- `--snapshot` does not publish a GitHub release or update the tap
+- The placeholder token is only there because the GoReleaser brew stanza still
+  expects the environment variable to exist
+- `scripts/release-verify.sh` validates archive names, checksums, README/LICENSE
+  inclusion, and installer URL resolution
+
+## Post-Release Verification
+
+After the GitHub Actions release finishes:
+
+1. Check the GitHub release page for the new tag
+2. Run:
+
+```bash
+./scripts/release-verify.sh --source github --version v0.2.6
+```
+
+3. Confirm the tap formula reports the same version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wraelen/homebrew-tap/main/Formula/framescli.rb | grep -E '^\s*version\s+"'
+```
+
+4. Sanity-check Homebrew install on a clean machine or VM:
+
+```bash
+brew install wraelen/tap/framescli
+framescli --version
+framescli doctor
+```
+
+## Dependencies and Caveats
+
+The generated formula declares:
+
+- Required: `ffmpeg`
+- Optional: `yt-dlp`
+
+Transcription backends remain separate Python installs:
+
+```bash
+pip install openai-whisper
+# or
+pip install faster-whisper
+```
 
 ## Troubleshooting
 
-**Formula not found:**
-- Ensure `homebrew-tap` repository exists and is public
-- Check that goreleaser successfully pushed the formula (check GitHub Actions logs)
-- Run `brew update` to refresh Homebrew's repository cache
+### Tap formula did not update
 
-**Installation fails:**
-- Check that the release archives exist on GitHub releases page
-- Verify checksums match in the formula and release assets
-- Test with `brew install --debug wraelen/tap/framescli`
+Check:
+
+- `HOMEBREW_TAP_TOKEN` is still present in GitHub Actions secrets
+- `.goreleaser.yml` still points at `wraelen/homebrew-tap`
+- The workflow log for the `Run GoReleaser` step
+- The `Verify Homebrew tap was bumped` step in `.github/workflows/release.yml`
+
+If the release assets were published but the tap did not move, fix the root
+cause and cut a new patch release. Do not hand-edit a formula in this repo to
+paper over a broken release.
+
+### `brew install wraelen/tap/framescli` still sees an older version
+
+Run:
+
+```bash
+brew update
+brew untap wraelen/tap && brew tap wraelen/tap
+```
+
+Then re-check the formula version from the raw tap URL.
 
 ## References
 
-- [Goreleaser Homebrew Documentation](https://goreleaser.com/customization/homebrew/)
-- [Homebrew Tap Documentation](https://docs.brew.sh/Taps)
-- [Homebrew Formula Cookbook](https://docs.brew.sh/Formula-Cookbook)
+- `.goreleaser.yml`
+- `.github/workflows/release.yml`
+- `scripts/release-verify.sh`
+- [GoReleaser Homebrew docs](https://goreleaser.com/customization/homebrew/)

@@ -1,46 +1,34 @@
 # FramesCLI JSON Schemas
 
-This directory contains JSON Schema definitions for all MCP tools and CLI JSON outputs.
+This directory documents the JSON contracts that are intentionally maintained in
+the repo.
 
-## MCP Tool Schemas
+## What Is Canonical Here
 
-Each tool has input and output schemas:
+- `cli-response-envelope.json`: the common automation envelope used by most
+  `--json` CLI commands and by MCP tool payloads
 
-- `mcp-tool-*.input.json` - Input argument schema for MCP tool calls
-- `mcp-tool-*.output.json` - Output schema for MCP tool responses
+## What Is Not Checked In Here
 
-## CLI JSON Schema
+Individual MCP tool schemas are not generated into this directory today.
+The canonical MCP input schemas live in `cmd/frames/main.go` and are exposed at
+runtime through `tools/list`.
 
-- `cli-response-envelope.json` - Common CLI `--json` response structure
+If you need the live MCP schema, inspect:
 
-## Usage
+1. `framescli mcp`
+2. JSON-RPC `tools/list`
 
-Agents can reference these schemas to understand FramesCLI's API contract.
+Notes:
 
-**Example (TypeScript):**
-```typescript
-import doctorInput from './mcp-tool-doctor.input.json';
-import doctorOutput from './mcp-tool-doctor.output.json';
+- `doctor --json` is a separate doctor report shape, not the common automation
+  envelope
+- `scripts/generate-schemas.sh` is currently a placeholder and does not emit
+  per-tool schema files yet
 
-// Validate tool call
-const args: typeof doctorInput = {};
-const result: typeof doctorOutput = await callTool('doctor', args);
-```
+## Tool Inventory
 
-**Example (Python with jsonschema):**
-```python
-import json
-import jsonschema
-
-with open('mcp-tool-preview.input.json') as f:
-    schema = json.load(f)
-
-# Validate input
-args = {"input": "recent", "fps": 4}
-jsonschema.validate(args, schema)
-```
-
-## Tool List
+Current MCP tools:
 
 | Tool | Description |
 |------|-------------|
@@ -48,9 +36,9 @@ jsonschema.validate(args, schema)
 | `preview` | Estimate extraction cost before running |
 | `extract` | Extract frames and optional transcript from video |
 | `extract_batch` | Process multiple videos |
-| `transcribe_run` | Resume/add transcription to existing run |
-| `open_last` | Get path to specific artifact from latest run |
-| `get_latest_artifacts` | Get all artifact paths from latest run |
-| `get_run_artifacts` | Query specific or recent runs |
-| `prefs_get` | Get agent path configuration |
-| `prefs_set` | Set agent path configuration |
+| `transcribe_run` | Resume or add transcription to an existing run |
+| `open_last` | Resolve a specific artifact path from the latest run |
+| `get_latest_artifacts` | Return the compact latest-run artifact map |
+| `get_run_artifacts` | Query indexed metadata for latest, named, or recent runs |
+| `prefs_get` | Read agent path configuration |
+| `prefs_set` | Persist agent path configuration |

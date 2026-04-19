@@ -17,10 +17,8 @@ fi
 
 send_req() {
   local req="$1"
-  local len
-  len="$(printf '%s' "$req" | wc -c | tr -d ' ')"
   {
-    printf 'Content-Length: %s\r\n\r\n%s' "$len" "$req"
+    printf '%s\n' "$req"
     # Keep stdin open briefly so async tools/call responses can flush.
     sleep 1
   } | "$BIN" mcp
@@ -30,7 +28,7 @@ check_contains() {
   local haystack="$1"
   local needle="$2"
   local label="$3"
-  if ! printf '%s' "$haystack" | rg -q "$needle"; then
+  if ! printf '%s' "$haystack" | grep -Eq "$needle"; then
     echo "FAIL: $label (missing pattern: $needle)" >&2
     echo "Response was:" >&2
     printf '%s\n' "$haystack" >&2

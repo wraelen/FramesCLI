@@ -67,6 +67,9 @@ func TestMCPServerHandshake(t *testing.T) {
 	if initPayload.ServerInfo.Name != "framescli" {
 		t.Fatalf("unexpected server name: %q", initPayload.ServerInfo.Name)
 	}
+	if initPayload.ServerInfo.Version != strings.TrimPrefix(version, "v") {
+		t.Fatalf("unexpected server version: %q", initPayload.ServerInfo.Version)
+	}
 
 	srv.send(t, map[string]any{
 		"jsonrpc": "2.0",
@@ -80,17 +83,26 @@ func TestMCPServerHandshake(t *testing.T) {
 	}
 	var toolsPayload struct {
 		Tools []struct {
-			Name string `json:"name"`
+			Name        string         `json:"name"`
+			InputSchema map[string]any `json:"inputSchema"`
 		} `json:"tools"`
 	}
 	decodeJSON(t, toolsResp.Result, &toolsPayload)
 	seen := map[string]bool{}
+	schemas := map[string]map[string]any{}
 	for _, tool := range toolsPayload.Tools {
 		seen[tool.Name] = true
+		schemas[tool.Name] = tool.InputSchema
 	}
 	for _, name := range []string{"doctor", "preview", "transcribe_run"} {
 		if !seen[name] {
 			t.Fatalf("tools/list missing %q", name)
+		}
+	}
+	for _, name := range []string{"preview", "extract", "extract_batch"} {
+		fpsSchema := mcpToolFPSSchema(t, schemas[name])
+		if _, ok := fpsSchema["anyOf"]; !ok {
+			t.Fatalf("expected %s fps schema to advertise number|string auto, got %+v", name, fpsSchema)
 		}
 	}
 }
@@ -153,6 +165,57 @@ func TestMCPServerDoctorAndPreview(t *testing.T) {
 	}
 	if got := data["target_fps"]; got != float64(2) {
 		t.Fatalf("expected target_fps=2, got %#v", got)
+	}
+}
+
+func TestMCPServerPreviewAcceptsAutoFPS(t *testing.T) {
+	srv := startMCPTestServer(t, 0, 0)
+	defer srv.Close(t)
+	srv.initializeSession(t)
+
+	videoPath := filepath.Join(srv.root, "sample.mp4")
+	if err := os.WriteFile(videoPath, []byte("placeholder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		fps  any
+		id   int
+	}{
+		{name: "zero", fps: 0, id: 12},
+		{name: "auto", fps: "auto", id: 13},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv.send(t, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      tc.id,
+				"method":  "tools/call",
+				"params": map[string]any{
+					"name": "preview",
+					"arguments": map[string]any{
+						"input": videoPath,
+						"fps":   tc.fps,
+					},
+				},
+			})
+			resp := srv.waitForID(t, strconv.Itoa(tc.id), time.Second)
+			if resp.Error != nil {
+				t.Fatalf("preview returned error: %+v", resp.Error)
+			}
+			env := decodeToolEnvelope(t, resp)
+			data, ok := env.Data.(map[string]any)
+			if !ok {
+				t.Fatalf("expected preview data object, got %T", env.Data)
+			}
+			if got := data["target_fps"]; got != float64(8) {
+				t.Fatalf("expected auto target_fps=8, got %#v", got)
+			}
+			if got := data["fps_mode"]; got != "auto" {
+				t.Fatalf("expected fps_mode=auto, got %#v", got)
+			}
+		})
 	}
 }
 
@@ -337,8 +400,22 @@ type mcpEnvelope struct {
 type mcpInitializeResult struct {
 	ProtocolVersion string `json:"protocolVersion"`
 	ServerInfo      struct {
-		Name string `json:"name"`
+		Name    string `json:"name"`
+		Version string `json:"version"`
 	} `json:"serverInfo"`
+}
+
+func mcpToolFPSSchema(t *testing.T, inputSchema map[string]any) map[string]any {
+	t.Helper()
+	props, ok := inputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing tool properties schema: %+v", inputSchema)
+	}
+	fpsSchema, ok := props["fps"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing fps schema: %+v", inputSchema)
+	}
+	return fpsSchema
 }
 
 func startMCPTestServer(t *testing.T, heartbeatMS int, transcribeDelayMS int) *mcpTestServer {
