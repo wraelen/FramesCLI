@@ -432,10 +432,7 @@ func (s *mcpTestServer) send(t *testing.T, payload any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fmt.Fprintf(s.stdin, "Content-Length: %d\r\n\r\n", len(raw)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.stdin.Write(raw); err != nil {
+	if _, err := fmt.Fprintf(s.stdin, "%s\n", raw); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -520,35 +517,21 @@ func (s *mcpTestServer) readLoop(r io.Reader) {
 }
 
 func readMCPEnvelope(br *bufio.Reader) (mcpEnvelope, error) {
-	headers := map[string]string{}
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
 			return mcpEnvelope{}, err
 		}
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			break
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
+		trimmed := strings.TrimRight(line, "\r\n")
+		if strings.TrimSpace(trimmed) == "" {
 			continue
 		}
-		headers[strings.ToLower(strings.TrimSpace(parts[0]))] = strings.TrimSpace(parts[1])
+		var msg mcpEnvelope
+		if err := json.Unmarshal([]byte(trimmed), &msg); err != nil {
+			return mcpEnvelope{}, fmt.Errorf("invalid mcp message: %w", err)
+		}
+		return msg, nil
 	}
-	n, err := strconv.Atoi(headers["content-length"])
-	if err != nil || n <= 0 {
-		return mcpEnvelope{}, fmt.Errorf("invalid content-length: %q", headers["content-length"])
-	}
-	body := make([]byte, n)
-	if _, err := io.ReadFull(br, body); err != nil {
-		return mcpEnvelope{}, err
-	}
-	var msg mcpEnvelope
-	if err := json.Unmarshal(body, &msg); err != nil {
-		return mcpEnvelope{}, err
-	}
-	return msg, nil
 }
 
 func decodeToolEnvelope(t *testing.T, resp mcpEnvelope) automationEnvelope {

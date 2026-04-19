@@ -1741,6 +1741,24 @@ func canonicalWorkflowPreset(name string) string {
 	}
 }
 
+// validateWorkflowPresetName returns an error for unknown preset values so
+// typos like `--preset balanaced` don't silently fall back to `balanced`.
+// Empty string is accepted (means "use default"). Legacy aliases (safe, fast,
+// snake/concat casing) are accepted since the existing canonicaliser maps
+// them.
+func validateWorkflowPresetName(name string) error {
+	v := strings.ToLower(strings.TrimSpace(name))
+	switch v {
+	case "",
+		"balanced",
+		"laptop-safe", "laptop_safe", "laptopsafe", "safe",
+		"high-fidelity", "high_fidelity", "highfidelity",
+		"fast":
+		return nil
+	}
+	return fmt.Errorf("unknown preset %q (valid: %s)", name, strings.Join(userFacingPresetChoices(), ", "))
+}
+
 func workflowPresetDefinitionFor(name string) workflowPresetDefinition {
 	canonical := canonicalWorkflowPreset(name)
 	for _, preset := range workflowPresetDefinitions() {
@@ -1897,6 +1915,10 @@ func extractCommand() *cobra.Command {
 			verbose, _ := cmd.Flags().GetBool("verbose")
 			hwaccel, _ := cmd.Flags().GetString("hwaccel")
 			preset, _ := cmd.Flags().GetString("preset")
+			if err := validateWorkflowPresetName(preset); err != nil {
+				failln(err.Error())
+				return
+			}
 			chunkDuration, _ := cmd.Flags().GetInt("chunk-duration")
 			startTime, _ := cmd.Flags().GetString("from")
 			endTime, _ := cmd.Flags().GetString("to")
@@ -2127,6 +2149,10 @@ func extractBatchCommand() *cobra.Command {
 			verbose, _ := cmd.Flags().GetBool("verbose")
 			hwaccel, _ := cmd.Flags().GetString("hwaccel")
 			preset, _ := cmd.Flags().GetString("preset")
+			if err := validateWorkflowPresetName(preset); err != nil {
+				failln(err.Error())
+				return
+			}
 			chunkDuration, _ := cmd.Flags().GetInt("chunk-duration")
 			startTime, _ := cmd.Flags().GetString("from")
 			endTime, _ := cmd.Flags().GetString("to")
@@ -2385,6 +2411,15 @@ func previewCommand() *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			started := time.Now()
 			jsonOut, _ := cmd.Flags().GetBool("json")
+			if err := validateWorkflowPresetName(preset); err != nil {
+				if jsonOut {
+					emitAutomationJSON("preview", started, "error", map[string]string{"input": args[0]}, err)
+					markCommandFailure()
+					return
+				}
+				failln(err.Error())
+				return
+			}
 			videoPath, note, err := resolveVideoInput(args[0])
 			if err != nil {
 				if jsonOut {
@@ -3512,7 +3547,9 @@ func (s *mcpServerState) writeNotification(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(s.out, "Content-Length: %d\r\n\r\n%s", len(raw), raw)
+	// MCP stdio framing is newline-delimited JSON. See
+	// https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
+	_, err = fmt.Fprintf(s.out, "%s\n", raw)
 	return err
 }
 
@@ -3800,7 +3837,7 @@ func handleMCPRequest(req mcpRequest) *mcpResponse {
 				"protocolVersion": "2024-11-05",
 				"serverInfo": map[string]any{
 					"name":    "framescli",
-					"version": "0.1.0",
+					"version": strings.TrimPrefix(version, "v"),
 				},
 				"capabilities": map[string]any{
 					"tools": map[string]any{},
@@ -3999,6 +4036,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
 		}
+		if err := validateWorkflowPresetName(args.Preset); err != nil {
+			return nil, &mcpInvalidParamsError{inner: err}
+		}
 		if strings.TrimSpace(args.Input) == "" {
 			args.Input = "recent"
 		}
@@ -4046,6 +4086,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		}
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
+		}
+		if err := validateWorkflowPresetName(args.Preset); err != nil {
+			return nil, &mcpInvalidParamsError{inner: err}
 		}
 
 		// Validate URL vs Input mutually exclusive
@@ -4149,6 +4192,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		}
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
+		}
+		if err := validateWorkflowPresetName(args.Preset); err != nil {
+			return nil, &mcpInvalidParamsError{inner: err}
 		}
 		for _, in := range args.Inputs {
 			if err := ensureMCPGlobAllowed(in); err != nil {
@@ -4436,40 +4482,26 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 	}
 }
 
+// readMCPMessage reads one MCP stdio frame. The MCP spec defines stdio framing
+// as newline-delimited JSON: one JSON-RPC message per line, with no embedded
+// newlines (json.Marshal escapes them inside strings). Blank lines are skipped
+// so clients that emit optional spacing don't break the loop.
 func readMCPMessage(br *bufio.Reader) (mcpRequest, error) {
-	headers := map[string]string{}
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
 			return mcpRequest{}, err
 		}
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			break
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
+		trimmed := strings.TrimRight(line, "\r\n")
+		if strings.TrimSpace(trimmed) == "" {
 			continue
 		}
-		headers[strings.ToLower(strings.TrimSpace(parts[0]))] = strings.TrimSpace(parts[1])
+		var req mcpRequest
+		if err := json.Unmarshal([]byte(trimmed), &req); err != nil {
+			return mcpRequest{}, fmt.Errorf("invalid mcp message: %w", err)
+		}
+		return req, nil
 	}
-	cl, ok := headers["content-length"]
-	if !ok {
-		return mcpRequest{}, fmt.Errorf("missing content-length header")
-	}
-	n, err := strconv.Atoi(cl)
-	if err != nil || n <= 0 {
-		return mcpRequest{}, fmt.Errorf("invalid content-length")
-	}
-	body := make([]byte, n)
-	if _, err := io.ReadFull(br, body); err != nil {
-		return mcpRequest{}, err
-	}
-	var req mcpRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		return mcpRequest{}, err
-	}
-	return req, nil
 }
 
 func writeMCPMessage(out io.Writer, resp *mcpResponse) error {
@@ -4477,10 +4509,7 @@ func writeMCPMessage(out io.Writer, resp *mcpResponse) error {
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(out, "Content-Length: %d\r\n\r\n", len(raw)); err != nil {
-		return err
-	}
-	_, err = out.Write(raw)
+	_, err = fmt.Fprintf(out, "%s\n", raw)
 	return err
 }
 
@@ -4511,7 +4540,7 @@ func sheetCommand() *cobra.Command {
 func cleanCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "clean [targetDir]",
-		Short: "Clean extracted frame artifacts (selective pruning via --older-than or --keep-last)",
+		Short: "Clean extracted frame artifacts (requires --older-than, --keep-last, or --all)",
 		Args:  cobra.ArbitraryArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			var target string
@@ -4528,13 +4557,32 @@ func cleanCommand() *cobra.Command {
 			olderThanSpec, _ := cmd.Flags().GetString("older-than")
 			keepLast, _ := cmd.Flags().GetInt("keep-last")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			all, _ := cmd.Flags().GetBool("all")
 
-			// If no selective flag was passed, preserve the historical
-			// "wipe everything" behavior so existing workflows don't change.
-			if strings.TrimSpace(olderThanSpec) == "" && keepLast <= 0 {
-				fmt.Printf("Cleaning frames in: %s\n", target)
+			noSelector := strings.TrimSpace(olderThanSpec) == "" && keepLast <= 0 && !all
+			if noSelector {
+				failln("clean requires a selector: --older-than <age>, --keep-last <N>, or --all (wipe everything).")
+				fmt.Fprintln(os.Stderr, "Example: framescli clean --older-than 30d")
+				fmt.Fprintln(os.Stderr, "         framescli clean --keep-last 10")
+				fmt.Fprintln(os.Stderr, "         framescli clean --all --dry-run")
+				return
+			}
+
+			if all {
+				summary, err := media.SummarizeFramesRoot(target)
+				if err != nil {
+					failf("Could not inspect %s: %v\n", target, err)
+					return
+				}
+				fmt.Printf("Target:     %s\n", target)
+				fmt.Printf("Runs:       %d\n", summary.RunCount)
+				fmt.Printf("Disk usage: %s\n", humanSize(summary.TotalBytes))
 				if dryRun {
-					fmt.Println("(dry run) would remove the entire frames root")
+					fmt.Println("(dry run) --all would delete every run under the target.")
+					return
+				}
+				if summary.RunCount == 0 && summary.TotalBytes == 0 {
+					fmt.Println("Nothing to remove.")
 					return
 				}
 				removed, err := media.CleanFrames(target)
@@ -4589,6 +4637,7 @@ func cleanCommand() *cobra.Command {
 	cmd.Flags().String("older-than", "", "Prune runs older than this age (e.g. '30d', '12h', '2h30m')")
 	cmd.Flags().Int("keep-last", 0, "Keep only the N most-recent runs; prune the rest")
 	cmd.Flags().Bool("dry-run", false, "Preview what would be pruned without removing anything")
+	cmd.Flags().Bool("all", false, "Delete every run under the target (explicit opt-in; combine with --dry-run to preview)")
 	return cmd
 }
 
@@ -5818,6 +5867,12 @@ func setupCommand() *cobra.Command {
 		Short: "Guided setup for defaults and toolchain config",
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := appCfg
+			if cmd.Flags().Changed("performance-mode") {
+				if err := validateWorkflowPresetName(performanceMode); err != nil {
+					failln(err.Error())
+					return
+				}
+			}
 			if nonInteractive {
 				if cmd.Flags().Changed("frames-root") {
 					cfg.FramesRoot = framesRoot

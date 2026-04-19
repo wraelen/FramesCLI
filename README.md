@@ -262,16 +262,11 @@ framescli open-last [--artifact transcript]
 framescli mcp
 ```
 
-Full reference: [Command Reference](docs/COMMAND_REFERENCE.md)
+Full reference: run `framescli <command> --help` (every subcommand has complete flag documentation).
 
 ---
 
 ## Documentation
-
-**Getting Started:**
-- [Installation Guide](docs/INSTALL.md) - Platform-specific instructions
-- [Quickstart](docs/QUICKSTART.md) - 5-minute walkthrough
-- [Performance Guide](docs/PERFORMANCE.md) - GPU setup and optimization
 
 **Integration:**
 - [Agent Integration](docs/AGENT_INTEGRATION.md) - MCP tools, JSON schemas

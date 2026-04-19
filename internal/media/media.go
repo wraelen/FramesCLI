@@ -1136,6 +1136,40 @@ func dirSizeBytes(dir string) (int64, error) {
 	return total, err
 }
 
+type FramesRootSummary struct {
+	RootDir    string
+	RunCount   int
+	TotalBytes int64
+}
+
+// SummarizeFramesRoot reports how many run directories (subdirs containing
+// run.json) exist under targetDir and the total byte size of targetDir. A
+// missing target is not an error — empty summary is returned.
+func SummarizeFramesRoot(targetDir string) (FramesRootSummary, error) {
+	summary := FramesRootSummary{RootDir: targetDir}
+	if targetDir == "" {
+		return summary, nil
+	}
+	entries, err := os.ReadDir(targetDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return summary, nil
+		}
+		return summary, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(targetDir, e.Name(), "run.json")); err == nil {
+			summary.RunCount++
+		}
+	}
+	total, _ := dirSizeBytes(targetDir)
+	summary.TotalBytes = total
+	return summary, nil
+}
+
 func CleanFrames(targetDir string) (int, error) {
 	if targetDir == "" {
 		targetDir = DefaultFramesRoot
