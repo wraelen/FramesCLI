@@ -58,11 +58,11 @@ framescli extract video.mp4 --fps 4 --voice
 
 ## What Makes This Different
 
- **GPU auto-detection** — 15-30x faster frame extraction on NVIDIA/AMD/Intel/Apple (transcription requires `faster-whisper` for GPU)
- **1000+ sites** — YouTube, Vimeo, Twitter, Reddit via yt-dlp
- **Local-first** — All processing on your machine, zero cloud, zero telemetry
- **MCP integration** — Works with Claude Desktop, Cursor, Cline, Windsurf
- **Single binary** — No Python venvs, no Docker, no node_modules
+- **GPU auto-detection** — 15-30x faster frame extraction on NVIDIA/AMD/Intel/Apple (transcription requires `faster-whisper` for GPU)
+- **1000+ sites** — YouTube, Vimeo, Twitter, Reddit via yt-dlp
+- **Local-first** — All processing on your machine, zero cloud, zero telemetry
+- **MCP integration** — Works with Claude Desktop, Cursor, Cline, Windsurf
+- **Single binary** — No Python venvs, no Docker, no node_modules
 
 ---
 
