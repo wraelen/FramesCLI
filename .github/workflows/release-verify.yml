@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release tag to verify (for example: v0.1.0)
+        description: "Release tag to verify (for example: v0.1.0)"
         required: true
 
 jobs:

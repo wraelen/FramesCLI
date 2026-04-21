@@ -8,8 +8,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      GOCACHE: ${{ runner.temp }}/go-cache
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -20,8 +18,6 @@ jobs:
 
   smoke-matrix:
     runs-on: ${{ matrix.os }}
-    env:
-      GOCACHE: ${{ runner.temp }}/go-cache
     strategy:
       fail-fast: false
       matrix:
