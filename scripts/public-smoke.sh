@@ -46,10 +46,8 @@ cd "$ROOT_DIR"
 export PATH="$ROOT_DIR/bin:$PATH"
 
 BIN="${FRAMESCLI_BIN:-./bin/framescli}"
-if [[ ! -x "$BIN" ]]; then
-  echo "[public-smoke] building framescli"
-  go build -o ./bin/framescli ./cmd/frames
-fi
+echo "[public-smoke] building framescli"
+go build -o ./bin/framescli ./cmd/frames
 
 if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "[public-smoke] ffmpeg not found. Run ./scripts/install-deps.sh --install" >&2
@@ -63,6 +61,8 @@ fi
 
 TMP_DIR="$ROOT_DIR/tmp/public-smoke"
 mkdir -p "$TMP_DIR"
+RUNS_ROOT="$TMP_DIR/frames-root"
+mkdir -p "$RUNS_ROOT"
 
 if [[ -z "${VIDEO_PATH}" ]]; then
   VIDEO_PATH="$TMP_DIR/sample-smoke.mp4"
@@ -88,13 +88,13 @@ echo "[public-smoke] preview"
 "$BIN" preview "$VIDEO_PATH" --mode both --json > "$TMP_DIR/preview.json"
 
 echo "[public-smoke] extract"
-"$BIN" extract "$VIDEO_PATH" --json > "$TMP_DIR/extract.json"
+"$BIN" extract "$VIDEO_PATH" --out "$RUNS_ROOT/single-extract" --json > "$TMP_DIR/extract.json"
 
 echo "[public-smoke] extract-batch"
-"$BIN" extract-batch "$VIDEO_PATH" --json > "$TMP_DIR/extract-batch.json"
+"$BIN" extract-batch "$VIDEO_PATH" --out "$RUNS_ROOT" --json > "$TMP_DIR/extract-batch.json"
 
 echo "[public-smoke] open-last"
-"$BIN" open-last --artifact run > "$TMP_DIR/open-last.txt"
+"$BIN" open-last --root "$RUNS_ROOT" --artifact run > "$TMP_DIR/open-last.txt"
 
 if [[ "$RUN_MCP" == "true" ]]; then
   if [[ -x "./scripts/mcp-smoke.sh" ]]; then
@@ -113,6 +113,7 @@ echo "  $TMP_DIR/preview.json"
 echo "  $TMP_DIR/extract.json"
 echo "  $TMP_DIR/extract-batch.json"
 echo "  $TMP_DIR/open-last.txt"
+echo "  $RUNS_ROOT"
 if [[ "$RUN_MCP" == "true" ]]; then
   echo "  $TMP_DIR/mcp-smoke.txt"
 fi

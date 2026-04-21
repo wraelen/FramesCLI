@@ -1,7 +1,8 @@
 # FramesCLI Agent Integration
 
-This is the setup-and-contract document for agent integrations. For copy-paste
-task flows, use [AGENT_RECIPES.md](AGENT_RECIPES.md).
+This is the canonical hand-written setup-and-contract document for agent
+integrations. Generated contract references live under `docs/schemas/`. For
+copy-paste task flows, use [AGENT_RECIPES.md](AGENT_RECIPES.md).
 
 ## Choose an Interface
 
@@ -47,18 +48,10 @@ Recommended MCP workflow:
 
 ## MCP Tool Surface
 
-| Tool | Purpose | Notes |
-|------|---------|-------|
-| `doctor` | Verify local dependencies and hardware | Good first call |
-| `prefs_set` | Persist allowed input/output roots | Required before most local-path MCP work |
-| `prefs_get` | Read current MCP path settings | Useful for diagnostics |
-| `preview` | Estimate frames, disk, transcript cost, and guardrails | Supports `fps` as a number, `0`, or `"auto"` |
-| `extract` | Run one extraction | Supports local `input` or remote `url` |
-| `extract_batch` | Run multiple extractions | Uses globs or configured input dirs |
-| `transcribe_run` | Resume or add transcription for an existing run | Requires a run dir with extracted audio |
-| `get_run_artifacts` | Read indexed run metadata for `latest`, a named run, or recent N runs | Preferred retrieval API |
-| `get_latest_artifacts` | Read the compact latest-run artifact map | Shortcut for latest-only flows |
-| `open_last` | Resolve a single artifact path from the latest run | Utility call |
+The generated MCP inventory lives in [schemas/README.md](schemas/README.md).
+Use that file for the current tool names, descriptions, input fields, and
+envelope `command` names. The machine-readable version is
+[schemas/mcp-tools.json](schemas/mcp-tools.json).
 
 Path model:
 
@@ -182,5 +175,5 @@ map:
 
 - [Agent Recipes](AGENT_RECIPES.md)
 - [JSON Schemas](schemas/README.md)
-- `cmd/frames/main.go` for the source-of-truth MCP input schemas embedded in
-  `tools/list`
+- `internal/contracts/` for the source-of-truth registry that drives `tools/list`
+  and generated schema docs

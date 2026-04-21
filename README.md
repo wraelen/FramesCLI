@@ -146,9 +146,47 @@ Claude automatically extracts frames, transcribes audio, and analyzes the conten
 
 ---
 
+## Configuration
+
+FramesCLI works zero-config — `framescli extract video.mp4` just works with sensible defaults. Most users never need to configure anything.
+
+**Show current config:**
+```bash
+framescli setup
+```
+Prints every value and the one-liner to change each.
+
+**Change values:**
+```bash
+framescli setup --non-interactive --<flag> <value>
+```
+
+Most common flags:
+```bash
+# Default output directory (for all runs)
+framescli setup --non-interactive --frames-root ~/my-frames
+
+# Enable `framescli extract recent` — point at your capture directory
+framescli setup --non-interactive --video-input-dirs ~/Movies/OBS,~/Downloads/Zoom
+
+# Default workflow preset
+framescli setup --non-interactive --performance-mode balanced
+
+# Enable GPU acceleration (auto-detected — only set if you want to pin a mode)
+framescli setup --non-interactive --hwaccel cuda
+```
+
+Config file: `~/.config/framescli/config.json` (edit directly if you prefer).
+
+**Agents:** use the MCP `prefs_set` tool — don't call the `setup` CLI.
+
+See `framescli setup --help` for every flag.
+
+---
+
 ## Output Structure
 
-By default, runs land in `~/framescli/runs/` (override with `--out <path>` or `framescli setup --frames-root <path>`):
+By default, runs land in `~/framescli/runs/` (override with `--out <path>` or `framescli setup --non-interactive --frames-root <path>`):
 
 ```
 ~/framescli/runs/Run_20260415-083045/

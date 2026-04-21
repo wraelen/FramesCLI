@@ -2,11 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Outstanding audits
+## QA entrypoint
 
-Read these before starting work — they capture known drift that hasn't been resolved yet. When you resolve a finding, update or delete the relevant audit doc so the next agent doesn't re-audit it.
-
-- `docs/audits/v0.2.6-audit.md` — post-release audit (2026-04-19). 3 open doc findings (schema enum, CHANGELOG `version` subcommand claim, `AGENT_RECIPES.md` TUI reference). MCP framing and release pipeline verified PASS.
+`scripts/qa-pass.sh` — canonical QA entrypoint. Fast lane: `./scripts/qa-pass.sh --no-public-smoke`. Full lane: `./scripts/qa-pass.sh`. CI and release both call it.
 
 ## Build and Test Commands
 
@@ -23,7 +21,6 @@ make test-integration   # Run integration tests with real ffmpeg/whisper
 go test ./cmd/frames    # Test main CLI package
 go test ./internal/media
 go test ./internal/config
-go test ./internal/tui
 ```
 
 ### MCP-specific testing
@@ -60,9 +57,6 @@ make release-verify     # Verify release artifacts
   - `config.go`: Config loading/saving, environment variable integration, preset profiles, path normalization
   - Default config: `~/.config/framescli/config.json`
   - Legacy path support: `~/.config/frames-cli/config.json`
-
-- **`internal/tui/`**: Terminal UI implementation using Bubbletea
-  - `dashboard.go`: Full-featured TUI with import wizard, queue management, profile saving, vim-mode toggle, theme switching
 
 ### Key Data Flow
 
@@ -142,9 +136,10 @@ All `--json` commands return:
 {
   "schema_version": "framescli.v1",
   "command": "extract",
-  "status": "success|partial|failed",
+  "status": "success|partial|error",
   "started_at": "...",
-  "completed_at": "...",
+  "ended_at": "...",
+  "duration_ms": 123,
   "data": { /* command-specific payload */ },
   "error": { /* optional, includes code, class, recovery, retryable */ }
 }
@@ -152,11 +147,11 @@ All `--json` commands return:
 
 ### Context and Cancellation
 
-Long-running operations accept `context.Context` for cancellation support. TUI and CLI hooks use signal handling to cancel in-progress ffmpeg/whisper subprocesses.
+Long-running operations accept `context.Context` for cancellation support. CLI hooks use signal handling to cancel in-progress ffmpeg/whisper subprocesses.
 
 ### Progress Tracking
 
-Progress callbacks: `func(percent float64)` passed to `ExtractMedia`; `func(stage string, pct float64)` on `TranscribeOptions.ProgressFn`. CLI renders progress bars, TUI updates stage indicators.
+Progress callbacks: `func(percent float64)` passed to `ExtractMedia`; `func(stage string, pct float64)` on `TranscribeOptions.ProgressFn`. CLI renders progress bars on stdout.
 
 Transcription emits a per-second heartbeat (`startTranscribeHeartbeat` in `internal/media/transcribe_chunk.go`) during otherwise-quiet whisper runs. The heartbeat interpolates pct inside the current chunk's span (capped at 90% so the bar doesn't claim completion before whisper returns) and augments the stage string with elapsed time, e.g. `chunk 1/2 · 00:47 elapsed`. Passing `pct < 0` to the progress callback means "leave pct unchanged" — use it for stage-only updates.
 
@@ -219,7 +214,6 @@ Performance mode applies preset sampling/format implicitly only when `default_fp
 
 - **ffmpeg/ffprobe**: required for all video operations
 - **whisper or faster-whisper**: optional, only for `--voice` transcription
-- **Bubbletea/Bubbles/Lipgloss**: TUI framework
 - **Cobra**: CLI framework
 
 ## gstack Integration

@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
-# Generate JSON schemas for all MCP tools by extracting from source code
+# Generate agent-facing schema/docs artifacts from the Go contract registry.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCHEMAS_DIR="$REPO_ROOT/docs/schemas"
+GO_CACHE_DIR="${GOCACHE:-$REPO_ROOT/.cache/go-build}"
 
-echo "Generating MCP tool JSON schemas..."
+echo "Generating agent-facing schemas and docs..."
+mkdir -p "$GO_CACHE_DIR"
 
-# Extract tool list from main.go and generate individual schema files
-# For now, this is a placeholder - schemas are manually maintained
-# Future: could parse Go code or generate from runtime reflection
+TMP_OUT="$(mktemp)"
+trap 'rm -f "$TMP_OUT"' EXIT
 
-echo "✓ Schema generation complete"
+GOCACHE="$GO_CACHE_DIR" go run ./cmd/contractgen >"$TMP_OUT"
+
+echo "✓ Generation complete"
 echo "  Location: $SCHEMAS_DIR"
-echo "  Note: Schemas are currently maintained manually in docs/schemas/"
+echo "  Wrote:"
+sed 's/^/  - /' "$TMP_OUT"

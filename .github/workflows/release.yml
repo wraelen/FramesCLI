@@ -11,6 +11,8 @@ permissions:
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    env:
+      GOCACHE: ${{ runner.temp }}/go-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,8 +29,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Run tests
-        run: go test ./...
+      - name: Run release QA pass
+        run: ./scripts/qa-pass.sh
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6

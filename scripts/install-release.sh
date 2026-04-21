@@ -18,7 +18,6 @@ PRINT_URL="false"
 AUTO_YES="false"
 INSTALL_DEPS="false"
 INSTALL_WHISPER="false"
-RUN_SETUP="false"
 RUN_DOCTOR="true"
 CHECKSUM_FILE="checksums.txt"
 
@@ -31,10 +30,8 @@ Options:
   --install-dir <dir>     Directory to place the framescli binary
   --with-deps             Install required media dependencies when possible
   --with-whisper          Install whisper via pipx
-  --setup                 Run 'framescli setup' after install
   --skip-doctor           Skip the post-install doctor check
   --yes                   Non-interactive install with defaults
-  --no-wizard             Disable the interactive post-install wizard
   --print-url             Print the resolved release asset URL and exit
   -h, --help              Show this help message
 
@@ -313,9 +310,8 @@ install_whisper_dep() {
   run_step "pipx install openai-whisper || pipx upgrade openai-whisper"
 }
 
-run_post_install_wizard() {
+run_post_install() {
   local target="$1"
-  local doctor_ok="false"
 
   echo ""
   echo "FramesCLI installed."
@@ -338,16 +334,13 @@ run_post_install_wizard() {
 
   if [[ "$RUN_DOCTOR" == "true" ]]; then
     echo ""
-    echo "Running FramesCLI doctor..."
-    if "$target" doctor < /dev/tty > /dev/tty 2>&1; then
-      doctor_ok="true"
-    fi
+    echo "Running framescli doctor..."
+    "$target" doctor < /dev/tty > /dev/tty 2>&1 || true
   fi
 
-  if [[ "$RUN_SETUP" == "true" || "$doctor_ok" == "true" ]] || prompt_yes_no "Launch the FramesCLI setup wizard now?" "y"; then
-    echo ""
-    "$target" setup < /dev/tty > /dev/tty 2>&1
-  fi
+  echo ""
+  echo "Next: framescli extract <video.mp4>"
+  echo "Help: framescli --help"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -368,15 +361,11 @@ while [[ $# -gt 0 ]]; do
       INSTALL_WHISPER="true"
       shift
       ;;
-    --setup)
-      RUN_SETUP="true"
-      shift
-      ;;
     --skip-doctor)
       RUN_DOCTOR="false"
       shift
       ;;
-    --yes|--no-wizard)
+    --yes)
       AUTO_YES="true"
       shift
       ;;
@@ -436,7 +425,7 @@ if [[ "$AUTO_YES" == "true" ]]; then
 fi
 
 if has_tty; then
-  run_post_install_wizard "$TARGET_PATH"
+  run_post_install "$TARGET_PATH"
 else
   echo "Verify with: ${BIN_NAME} --help"
   echo "Then run: ${BIN_NAME} doctor"

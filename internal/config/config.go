@@ -12,9 +12,8 @@ import (
 
 type Config struct {
 	FramesRoot        string                   `json:"frames_root"`
-	OBSVideoDir       string                   `json:"obs_video_dir"`
-	RecentVideoDirs   []string                 `json:"recent_video_dirs,omitempty"`
-	RecentExts        []string                 `json:"recent_extensions,omitempty"`
+	VideoInputDirs    []string                 `json:"video_input_dirs,omitempty"`
+	VideoInputExts    []string                 `json:"video_input_extensions,omitempty"`
 	HWAccel           string                   `json:"hwaccel,omitempty"`
 	PerformanceMode   string                   `json:"performance_mode,omitempty"`
 	WhisperBin        string                   `json:"whisper_bin"`
@@ -24,10 +23,6 @@ type Config struct {
 	TranscribeBackend string                   `json:"transcribe_backend,omitempty"`
 	DefaultFPS        float64                  `json:"default_fps"`
 	DefaultFormat     string                   `json:"default_format"`
-	TUIThemePreset    string                   `json:"tui_theme_preset,omitempty"`
-	TUISimpleMode     bool                     `json:"tui_simple_mode"`
-	TUIWelcomeSeen    bool                     `json:"tui_welcome_seen"`
-	TUIVimMode        bool                     `json:"tui_vim_mode,omitempty"`
 	PresetProfiles    map[string]PresetProfile `json:"preset_profiles,omitempty"`
 	AgentInputDirs    []string                 `json:"agent_input_dirs,omitempty"`
 	AgentOutputRoot   string                   `json:"agent_output_root,omitempty"`
@@ -74,9 +69,8 @@ func defaultFramesRoot() string {
 func Default() Config {
 	return Config{
 		FramesRoot:        defaultFramesRoot(),
-		OBSVideoDir:       "",
-		RecentVideoDirs:   []string{},
-		RecentExts:        []string{"mp4", "mkv", "mov"},
+		VideoInputDirs:    []string{},
+		VideoInputExts:    []string{"mp4", "mkv", "mov"},
 		HWAccel:           "none",
 		PerformanceMode:   "balanced",
 		WhisperBin:        "whisper",
@@ -86,10 +80,6 @@ func Default() Config {
 		TranscribeBackend: "auto",
 		DefaultFPS:        4,
 		DefaultFormat:     "png",
-		TUIThemePreset:    "default",
-		TUISimpleMode:     true,
-		TUIWelcomeSeen:    false,
-		TUIVimMode:        false,
 		PresetProfiles: map[string]PresetProfile{
 			"laptop-safe":   {Preset: "laptop-safe", Format: "jpg", Voice: false, NoSheet: false},
 			"balanced":      {Preset: "balanced", Format: "png", Voice: false, NoSheet: false},
@@ -214,9 +204,6 @@ func ApplyEnvDefaults(cfg Config) {
 	if strings.TrimSpace(os.Getenv("TRANSCRIBE_BACKEND")) == "" && strings.TrimSpace(cfg.TranscribeBackend) != "" {
 		_ = os.Setenv("TRANSCRIBE_BACKEND", cfg.TranscribeBackend)
 	}
-	if strings.TrimSpace(os.Getenv("OBS_VIDEO_DIR")) == "" && strings.TrimSpace(cfg.OBSVideoDir) != "" {
-		_ = os.Setenv("OBS_VIDEO_DIR", cfg.OBSVideoDir)
-	}
 }
 
 func normalize(cfg *Config) {
@@ -224,14 +211,10 @@ func normalize(cfg *Config) {
 	if cfg.FramesRoot == "" {
 		cfg.FramesRoot = defaultFramesRoot()
 	}
-	cfg.OBSVideoDir = strings.TrimSpace(cfg.OBSVideoDir)
-	cfg.RecentVideoDirs = normalizePathList(cfg.RecentVideoDirs)
-	if len(cfg.RecentVideoDirs) == 0 && cfg.OBSVideoDir != "" {
-		cfg.RecentVideoDirs = []string{cfg.OBSVideoDir}
-	}
-	cfg.RecentExts = normalizeExtList(cfg.RecentExts)
-	if len(cfg.RecentExts) == 0 {
-		cfg.RecentExts = []string{"mp4", "mkv", "mov"}
+	cfg.VideoInputDirs = normalizePathList(cfg.VideoInputDirs)
+	cfg.VideoInputExts = normalizeExtList(cfg.VideoInputExts)
+	if len(cfg.VideoInputExts) == 0 {
+		cfg.VideoInputExts = []string{"mp4", "mkv", "mov"}
 	}
 	cfg.WhisperBin = strings.TrimSpace(cfg.WhisperBin)
 	cfg.FasterWhisperBin = strings.TrimSpace(cfg.FasterWhisperBin)
@@ -293,13 +276,6 @@ func normalize(cfg *Config) {
 	if cfg.DefaultFormat != "png" && cfg.DefaultFormat != "jpg" {
 		cfg.DefaultFormat = "png"
 	}
-	cfg.TUIThemePreset = strings.ToLower(strings.TrimSpace(cfg.TUIThemePreset))
-	if cfg.TUIThemePreset == "" {
-		cfg.TUIThemePreset = "default"
-	}
-	if cfg.TUIThemePreset != "default" && cfg.TUIThemePreset != "high-contrast" && cfg.TUIThemePreset != "light" {
-		cfg.TUIThemePreset = "default"
-	}
 	cfg.PresetProfiles = normalizeProfiles(cfg.PresetProfiles)
 	cfg.AgentInputDirs = normalizePathList(cfg.AgentInputDirs)
 	cfg.AgentOutputRoot = strings.TrimSpace(cfg.AgentOutputRoot)
@@ -345,10 +321,10 @@ func Validate(cfg Config) []ValidationWarning {
 			Message: "unsupported value; use auto|whisper|faster-whisper",
 		})
 	}
-	for _, dir := range normalized.RecentVideoDirs {
+	for _, dir := range normalized.VideoInputDirs {
 		if stat, err := os.Stat(dir); err != nil || !stat.IsDir() {
 			warnings = append(warnings, ValidationWarning{
-				Field:   "recent_video_dirs",
+				Field:   "video_input_dirs",
 				Message: "missing or inaccessible directory: " + dir,
 			})
 		}

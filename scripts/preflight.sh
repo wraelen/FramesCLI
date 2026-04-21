@@ -20,7 +20,8 @@ echo "[preflight] cli smoke"
 go run ./cmd/frames --help >/dev/null
 go run ./cmd/frames doctor --help >/dev/null
 go run ./cmd/frames benchmark --help >/dev/null
-go run ./cmd/frames tui --help >/dev/null
+go run ./cmd/frames setup --help >/dev/null
+go run ./cmd/frames mcp --help >/dev/null
+go run ./cmd/frames transcribe-run --help >/dev/null
 
 echo "[preflight] done"
-

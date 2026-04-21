@@ -1,0 +1,286 @@
+{
+  "generatedFrom": "internal/contracts",
+  "mcpProtocolMethod": "tools/list",
+  "mcpToolInventoryDocument": true,
+  "schemaVersion": "framescli.v1",
+  "tools": [
+    {
+      "description": "Check local toolchain readiness for FramesCLI",
+      "envelopeCommand": "doctor",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "doctor"
+    },
+    {
+      "description": "Dry-run output estimate for a video input (defaults to recent when omitted)",
+      "envelopeCommand": "preview",
+      "inputSchema": {
+        "properties": {
+          "chunk_duration": {
+            "type": "integer"
+          },
+          "format": {
+            "type": "string"
+          },
+          "fps": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "enum": [
+                  "auto"
+                ],
+                "type": "string"
+              }
+            ]
+          },
+          "input": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "preset": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "preview"
+    },
+    {
+      "description": "Run single-video extraction workflow (input defaults to recent, or use url for remote videos)",
+      "envelopeCommand": "extract",
+      "inputSchema": {
+        "properties": {
+          "allow_expensive": {
+            "type": "boolean"
+          },
+          "chunk_duration": {
+            "type": "integer"
+          },
+          "every_n": {
+            "type": "integer"
+          },
+          "format": {
+            "type": "string"
+          },
+          "fps": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "enum": [
+                  "auto"
+                ],
+                "type": "string"
+              }
+            ]
+          },
+          "frame_end": {
+            "type": "integer"
+          },
+          "frame_start": {
+            "type": "integer"
+          },
+          "from": {
+            "type": "string"
+          },
+          "hwaccel": {
+            "type": "string"
+          },
+          "input": {
+            "type": "string"
+          },
+          "name_template": {
+            "type": "string"
+          },
+          "no_cache": {
+            "type": "boolean"
+          },
+          "out": {
+            "type": "string"
+          },
+          "preset": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "transcribe_backend": {
+            "type": "string"
+          },
+          "transcribe_bin": {
+            "type": "string"
+          },
+          "transcribe_language": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "voice": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "extract"
+    },
+    {
+      "description": "Run extraction for multiple inputs/globs (falls back to configured agent_input_dirs)",
+      "envelopeCommand": "extract-batch",
+      "inputSchema": {
+        "properties": {
+          "allow_expensive": {
+            "type": "boolean"
+          },
+          "chunk_duration": {
+            "type": "integer"
+          },
+          "format": {
+            "type": "string"
+          },
+          "fps": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "enum": [
+                  "auto"
+                ],
+                "type": "string"
+              }
+            ]
+          },
+          "inputs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "preset": {
+            "type": "string"
+          },
+          "transcribe_backend": {
+            "type": "string"
+          },
+          "transcribe_bin": {
+            "type": "string"
+          },
+          "transcribe_language": {
+            "type": "string"
+          },
+          "voice": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "extract_batch"
+    },
+    {
+      "description": "Resolve path for artifact from most recent run",
+      "envelopeCommand": "open-last",
+      "inputSchema": {
+        "properties": {
+          "artifact": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "open_last"
+    },
+    {
+      "description": "Return paths for available artifacts from the most recent run",
+      "envelopeCommand": "get_latest_artifacts",
+      "inputSchema": {
+        "properties": {
+          "root": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_latest_artifacts"
+    },
+    {
+      "description": "Return indexed artifacts for the latest, a specific run, or a recent run list",
+      "envelopeCommand": "get_run_artifacts",
+      "inputSchema": {
+        "properties": {
+          "recent": {
+            "type": "integer"
+          },
+          "root": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_run_artifacts"
+    },
+    {
+      "description": "Resume transcription for an existing run directory",
+      "envelopeCommand": "transcribe_run",
+      "inputSchema": {
+        "properties": {
+          "chunk_duration": {
+            "type": "integer"
+          },
+          "run_dir": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_dir"
+        ],
+        "type": "object"
+      },
+      "name": "transcribe_run"
+    },
+    {
+      "description": "Get agent path preferences for input and output roots",
+      "envelopeCommand": "prefs_get",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "prefs_get"
+    },
+    {
+      "description": "Persist agent path preferences for input and output roots",
+      "envelopeCommand": "prefs_set",
+      "inputSchema": {
+        "properties": {
+          "input_dirs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "output_root": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "prefs_set"
+    }
+  ]
+}

@@ -1,72 +1,86 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "doctor --json is a separate report shape and does not use this envelope",
   "$id": "https://github.com/wraelen/framescli/schemas/cli-response-envelope.json",
-  "title": "FramesCLI JSON Response Envelope",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "description": "Common automation envelope used by most --json CLI commands and MCP tool payloads",
-  "type": "object",
-  "required": ["schema_version", "command", "status", "started_at", "ended_at", "duration_ms"],
   "properties": {
-    "schema_version": {
-      "type": "string",
-      "const": "framescli.v1",
-      "description": "Schema version identifier"
-    },
     "command": {
-      "type": "string",
-      "enum": ["extract", "extract-batch", "preview", "transcribe-run", "open-last", "artifacts"],
-      "description": "Command that generated this response"
-    },
-    "status": {
-      "type": "string",
-      "enum": ["success", "partial", "error"],
-      "description": "Overall command status"
-    },
-    "started_at": {
-      "type": "string",
-      "format": "date-time",
-      "description": "Command start timestamp (RFC3339)"
-    },
-    "ended_at": {
-      "type": "string",
-      "format": "date-time",
-      "description": "Command completion timestamp (RFC3339)"
-    },
-    "duration_ms": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "Elapsed command time in milliseconds"
+      "$comment": "Intentionally unconstrained: some emitters use CLI-style command names while MCP payloads may expose tool-oriented names. Keep this field as a free-form string and rely on generated tool inventory docs for the current surface.",
+      "description": "CLI command or MCP tool name that generated this response",
+      "type": "string"
     },
     "data": {
-      "type": "object",
-      "description": "Command-specific result payload (structure varies by command)"
+      "description": "Command-specific result payload (structure varies by command)",
+      "type": "object"
+    },
+    "duration_ms": {
+      "description": "Elapsed command time in milliseconds",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "ended_at": {
+      "description": "Command completion timestamp (RFC3339)",
+      "format": "date-time",
+      "type": "string"
     },
     "error": {
-      "type": "object",
       "description": "Present when status is 'partial' or 'error'",
-      "required": ["code", "message"],
       "properties": {
+        "class": {
+          "description": "Additive error category for agent handling",
+          "type": "string"
+        },
         "code": {
-          "type": "string",
-          "description": "Stable error code (always 'command_failed')"
+          "description": "Stable error code (always 'command_failed')",
+          "type": "string"
         },
         "message": {
-          "type": "string",
-          "description": "Human-readable error description"
-        },
-        "class": {
-          "type": "string",
-          "description": "Additive error category for agent handling"
+          "description": "Human-readable error description",
+          "type": "string"
         },
         "recovery": {
-          "type": "string",
-          "description": "Suggested recovery action for user/agent"
+          "description": "Suggested recovery action for user/agent",
+          "type": "string"
         },
         "retryable": {
-          "type": "boolean",
-          "description": "Whether retrying the operation might succeed"
+          "description": "Whether retrying the operation might succeed",
+          "type": "boolean"
         }
-      }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "framescli.v1",
+      "description": "Schema version identifier",
+      "type": "string"
+    },
+    "started_at": {
+      "description": "Command start timestamp (RFC3339)",
+      "format": "date-time",
+      "type": "string"
+    },
+    "status": {
+      "description": "Overall command status",
+      "enum": [
+        "success",
+        "partial",
+        "error"
+      ],
+      "type": "string"
     }
   },
-  "$comment": "doctor --json is a separate report shape and does not use this envelope"
+  "required": [
+    "schema_version",
+    "command",
+    "status",
+    "started_at",
+    "ended_at",
+    "duration_ms"
+  ],
+  "title": "FramesCLI JSON Response Envelope",
+  "type": "object"
 }

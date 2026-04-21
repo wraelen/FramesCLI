@@ -16,9 +16,15 @@ if [[ ! -x "$BIN" ]]; then
 fi
 
 send_req() {
-  local req="$1"
+  local init='{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","clientInfo":{"name":"framescli-mcp-smoke","version":"1.0"},"capabilities":{}}}'
+  local ready='{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'
   {
-    printf '%s\n' "$req"
+    printf '%s\n' "$init"
+    printf '%s\n' "$ready"
+    while [[ $# -gt 0 ]]; do
+      printf '%s\n' "$1"
+      shift
+    done
     # Keep stdin open briefly so async tools/call responses can flush.
     sleep 1
   } | "$BIN" mcp

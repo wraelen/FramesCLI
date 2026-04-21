@@ -7,8 +7,27 @@ on:
   workflow_dispatch:
 
 jobs:
+  qa-full:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      GOCACHE: ${{ runner.temp }}/go-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Run full QA pass
+        run: ./scripts/qa-pass.sh
+
   media-integration:
     runs-on: ubuntu-latest
+    env:
+      GOCACHE: ${{ runner.temp }}/go-cache
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

@@ -25,10 +25,14 @@ import (
 	"github.com/spf13/cobra"
 
 	appconfig "github.com/wraelen/framescli/internal/config"
+	"github.com/wraelen/framescli/internal/contracts"
 	"github.com/wraelen/framescli/internal/media"
 )
 
-var appCfg appconfig.Config
+var (
+	appCfg   appconfig.Config
+	appCfgMu sync.RWMutex // guards appCfg reads/writes across concurrent MCP tool handlers
+)
 var commandFailed bool
 var commandInterrupted bool
 
@@ -533,8 +537,6 @@ type telemetryEvent struct {
 	GOARCH        string            `json:"goarch"`
 }
 
-const automationSchemaVersion = "framescli.v1"
-
 // version, commit, and date are populated by goreleaser via -ldflags at build
 // time. Default values reflect "built from source without ldflags" (typical
 // `go build` or `make build`).
@@ -732,7 +734,7 @@ func buildMCPError(code int, err error) *mcpError {
 
 func buildAutomationEnvelope(command string, started time.Time, status string, data any, err error) automationEnvelope {
 	env := automationEnvelope{
-		SchemaVersion: automationSchemaVersion,
+		SchemaVersion: contracts.AutomationSchemaVersion,
 		Command:       command,
 		Status:        status,
 		StartedAt:     started.UTC().Format(time.RFC3339),
@@ -2085,7 +2087,7 @@ func extractCommand() *cobra.Command {
 
 	cmd.Flags().String("url", "", "Video URL to download and extract (mutually exclusive with video path)")
 	cmd.Flags().Bool("no-cache", false, "Skip cache and re-download video even if already cached")
-	cmd.Flags().String("fps", fmt.Sprintf("%g", appCfg.DefaultFPS), "Frames per second, or 0/auto for automatic ~60-frame mode")
+	cmd.Flags().String("fps", fmt.Sprintf("%g", appCfg.DefaultFPS), "Frames per second, or 0/auto for automatic target-frame mode (~480 frames, clamped 1-8 fps)")
 	cmd.Flags().String("out", "", "Output directory")
 	cmd.Flags().Bool("voice", false, "Extract audio and generate transcript in the output folder")
 	cmd.Flags().String("format", "png", "Frame output format: png or jpg")
@@ -2364,7 +2366,7 @@ func extractBatchCommand() *cobra.Command {
 			}
 		},
 	}
-	cmd.Flags().String("fps", fmt.Sprintf("%g", appCfg.DefaultFPS), "Frames per second, or 0/auto for automatic ~60-frame mode")
+	cmd.Flags().String("fps", fmt.Sprintf("%g", appCfg.DefaultFPS), "Frames per second, or 0/auto for automatic target-frame mode (~480 frames, clamped 1-8 fps)")
 	cmd.Flags().String("out", "", "Output root directory (one subdir per input video)")
 	cmd.Flags().Bool("voice", false, "Extract audio and generate transcript in the output folder")
 	cmd.Flags().String("format", appCfg.DefaultFormat, "Frame output format: png or jpg")
@@ -2540,7 +2542,7 @@ func previewCommand() *cobra.Command {
 			}
 		},
 	}
-	cmd.Flags().StringVar(&fpsSpec, "fps", fmt.Sprintf("%g", appCfg.DefaultFPS), "Target extraction FPS for estimate, or 0/auto for automatic ~60-frame mode")
+	cmd.Flags().StringVar(&fpsSpec, "fps", fmt.Sprintf("%g", appCfg.DefaultFPS), "Target extraction FPS for estimate, or 0/auto for automatic target-frame mode (~480 frames, clamped 1-8 fps)")
 	cmd.Flags().StringVar(&format, "format", appCfg.DefaultFormat, "Frame format estimate: png|jpg")
 	cmd.Flags().StringVar(&mode, "mode", "both", "Output mode estimate: frames|audio|both")
 	cmd.Flags().StringVar(&preset, "preset", appCfg.PerformanceMode, "Workflow preset: laptop-safe|balanced|high-fidelity (legacy: safe|fast)")
@@ -3557,7 +3559,7 @@ func (s *mcpServerState) writeNotification(method string, params any) error {
 
 func (s *mcpServerState) startHeartbeat(ctx context.Context, toolName string) func() {
 	switch toolName {
-	case "extract", "extract_batch", "transcribe_run":
+	case contracts.MCPToolExtract, contracts.MCPToolExtractBatch, contracts.MCPToolTranscribeRun:
 	default:
 		return func() {}
 	}
@@ -3580,9 +3582,9 @@ func (s *mcpServerState) startHeartbeat(ctx context.Context, toolName string) fu
 				elapsed := int(time.Since(started).Seconds())
 				verb := "working"
 				switch toolName {
-				case "extract", "extract_batch":
+				case contracts.MCPToolExtract, contracts.MCPToolExtractBatch:
 					verb = "extracting"
-				case "transcribe_run":
+				case contracts.MCPToolTranscribeRun:
 					verb = "transcribing"
 				}
 				_ = s.writeNotification("notifications/message", map[string]any{
@@ -3847,137 +3849,7 @@ func handleMCPRequest(req mcpRequest) *mcpResponse {
 			},
 		}
 	case "tools/list":
-		tools := []map[string]any{
-			{
-				"name":        "doctor",
-				"description": "Check local toolchain readiness for FramesCLI",
-				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
-			},
-			{
-				"name":        "preview",
-				"description": "Dry-run output estimate for a video input (defaults to recent when omitted)",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"input":          map[string]any{"type": "string"},
-						"fps":            mcpFPSSchema(),
-						"format":         map[string]any{"type": "string"},
-						"mode":           map[string]any{"type": "string"},
-						"preset":         map[string]any{"type": "string"},
-						"chunk_duration": map[string]any{"type": "integer"},
-					},
-				},
-			},
-			{
-				"name":        "extract",
-				"description": "Run single-video extraction workflow (input defaults to recent, or use url for remote videos)",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"input":               map[string]any{"type": "string"},
-						"url":                 map[string]any{"type": "string"},
-						"no_cache":            map[string]any{"type": "boolean"},
-						"fps":                 mcpFPSSchema(),
-						"voice":               map[string]any{"type": "boolean"},
-						"format":              map[string]any{"type": "string"},
-						"out":                 map[string]any{"type": "string"},
-						"hwaccel":             map[string]any{"type": "string"},
-						"preset":              map[string]any{"type": "string"},
-						"chunk_duration":      map[string]any{"type": "integer"},
-						"allow_expensive":     map[string]any{"type": "boolean"},
-						"from":                map[string]any{"type": "string"},
-						"to":                  map[string]any{"type": "string"},
-						"frame_start":         map[string]any{"type": "integer"},
-						"frame_end":           map[string]any{"type": "integer"},
-						"every_n":             map[string]any{"type": "integer"},
-						"name_template":       map[string]any{"type": "string"},
-						"transcribe_backend":  map[string]any{"type": "string"},
-						"transcribe_bin":      map[string]any{"type": "string"},
-						"transcribe_language": map[string]any{"type": "string"},
-					},
-				},
-			},
-			{
-				"name":        "extract_batch",
-				"description": "Run extraction for multiple inputs/globs (falls back to configured agent_input_dirs)",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"inputs":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-						"fps":                 mcpFPSSchema(),
-						"voice":               map[string]any{"type": "boolean"},
-						"format":              map[string]any{"type": "string"},
-						"preset":              map[string]any{"type": "string"},
-						"chunk_duration":      map[string]any{"type": "integer"},
-						"allow_expensive":     map[string]any{"type": "boolean"},
-						"transcribe_backend":  map[string]any{"type": "string"},
-						"transcribe_bin":      map[string]any{"type": "string"},
-						"transcribe_language": map[string]any{"type": "string"},
-					},
-				},
-			},
-			{
-				"name":        "open_last",
-				"description": "Resolve path for artifact from most recent run",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"root":     map[string]any{"type": "string"},
-						"artifact": map[string]any{"type": "string"},
-					},
-				},
-			},
-			{
-				"name":        "get_latest_artifacts",
-				"description": "Return paths for available artifacts from the most recent run",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"root": map[string]any{"type": "string"},
-					},
-				},
-			},
-			{
-				"name":        "get_run_artifacts",
-				"description": "Return indexed artifacts for the latest, a specific run, or a recent run list",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"root":   map[string]any{"type": "string"},
-						"run":    map[string]any{"type": "string"},
-						"recent": map[string]any{"type": "integer"},
-					},
-				},
-			},
-			{
-				"name":        "transcribe_run",
-				"description": "Resume transcription for an existing run directory",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"run_dir":        map[string]any{"type": "string"},
-						"chunk_duration": map[string]any{"type": "integer"},
-					},
-				},
-			},
-			{
-				"name":        "prefs_get",
-				"description": "Get agent path preferences for input and output roots",
-				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
-			},
-			{
-				"name":        "prefs_set",
-				"description": "Persist agent path preferences for input and output roots",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"input_dirs":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-						"output_root": map[string]any{"type": "string"},
-					},
-				},
-			},
-		}
-		return &mcpResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"tools": tools}}
+		return &mcpResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"tools": contracts.MCPToolDescriptors()}}
 	default:
 		return makeErr(-32601, "method not found")
 	}
@@ -4012,60 +3884,6 @@ func decodeMCPArgs(argsRaw json.RawMessage, target any) error {
 	return nil
 }
 
-type mcpFPSSpec struct {
-	Value    float64
-	Explicit bool
-}
-
-func (s *mcpFPSSpec) UnmarshalJSON(data []byte) error {
-	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		*s = mcpFPSSpec{}
-		return nil
-	}
-	s.Explicit = true
-	if trimmed[0] == '"' {
-		var raw string
-		if err := json.Unmarshal(trimmed, &raw); err != nil {
-			return err
-		}
-		fps, err := parseExtractFPSSpec(raw)
-		if err != nil {
-			return fmt.Errorf("invalid fps value. use a positive number, 0, or auto")
-		}
-		s.Value = fps
-		return nil
-	}
-	var raw float64
-	if err := json.Unmarshal(trimmed, &raw); err != nil {
-		return err
-	}
-	if raw < 0 {
-		return fmt.Errorf("invalid fps value. use a positive number, 0, or auto")
-	}
-	s.Value = raw
-	return nil
-}
-
-func resolveMCPFPS(spec mcpFPSSpec, fallback float64) (float64, bool) {
-	if spec.Explicit {
-		return spec.Value, true
-	}
-	if spec.Value <= 0 {
-		return fallback, false
-	}
-	return spec.Value, false
-}
-
-func mcpFPSSchema() map[string]any {
-	return map[string]any{
-		"anyOf": []map[string]any{
-			{"type": "number", "minimum": 0},
-			{"type": "string", "enum": []string{"auto"}},
-		},
-	}
-}
-
 func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -4073,22 +3891,15 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		}
 	}
 	switch name {
-	case "doctor":
+	case contracts.MCPToolDoctor:
 		var args struct{}
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
 		}
 		started := time.Now()
-		return buildAutomationEnvelope("doctor", started, "success", collectDoctorReport(appCfg), nil), nil
-	case "preview":
-		var args struct {
-			Input         string     `json:"input"`
-			FPS           mcpFPSSpec `json:"fps"`
-			Format        string     `json:"format"`
-			Mode          string     `json:"mode"`
-			Preset        string     `json:"preset"`
-			ChunkDuration int        `json:"chunk_duration"`
-		}
+		return buildAutomationEnvelope(contracts.EnvelopeCommandDoctor, started, "success", collectDoctorReport(appCfg), nil), nil
+	case contracts.MCPToolPreview:
+		var args contracts.PreviewArgs
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
 		}
@@ -4109,38 +3920,17 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			args.Preset = appCfg.PerformanceMode
 		}
 		started := time.Now()
-		requestedFPS, fpsExplicit := resolveMCPFPS(args.FPS, 0)
+		requestedFPS, fpsExplicit := args.FPS.Resolve(0)
 		data, err := runPreviewResult(args.Input, requestedFPS, args.Format, args.Mode, args.Preset, args.ChunkDuration, fpsExplicit, strings.TrimSpace(args.Format) != "", presetExplicit, args.ChunkDuration > 0)
 		if err != nil {
 			if ctx != nil && ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			return buildAutomationEnvelope("preview", started, "error", map[string]string{"input": args.Input}, err), nil
+			return buildAutomationEnvelope(contracts.EnvelopeCommandPreview, started, "error", map[string]string{"input": args.Input}, err), nil
 		}
-		return buildAutomationEnvelope("preview", started, "success", data, nil), nil
-	case "extract":
-		var args struct {
-			Input              string     `json:"input"`
-			URL                string     `json:"url"`
-			NoCache            bool       `json:"no_cache"`
-			FPS                mcpFPSSpec `json:"fps"`
-			Voice              bool       `json:"voice"`
-			Format             string     `json:"format"`
-			Out                string     `json:"out"`
-			HWAccel            string     `json:"hwaccel"`
-			Preset             string     `json:"preset"`
-			From               string     `json:"from"`
-			To                 string     `json:"to"`
-			FrameStart         int        `json:"frame_start"`
-			FrameEnd           int        `json:"frame_end"`
-			EveryN             int        `json:"every_n"`
-			NameTemplate       string     `json:"name_template"`
-			ChunkDuration      int        `json:"chunk_duration"`
-			AllowExpensive     bool       `json:"allow_expensive"`
-			TranscribeBackend  string     `json:"transcribe_backend"`
-			TranscribeBin      string     `json:"transcribe_bin"`
-			TranscribeLanguage string     `json:"transcribe_language"`
-		}
+		return buildAutomationEnvelope(contracts.EnvelopeCommandPreview, started, "success", data, nil), nil
+	case contracts.MCPToolExtract:
+		var args contracts.ExtractArgs
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
 		}
@@ -4165,7 +3955,7 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 				return nil, err
 			}
 		}
-		requestedFPS, fpsExplicit := resolveMCPFPS(args.FPS, appCfg.DefaultFPS)
+		requestedFPS, fpsExplicit := args.FPS.Resolve(appCfg.DefaultFPS)
 		formatExplicit := strings.TrimSpace(args.Format) != ""
 		presetExplicit := strings.TrimSpace(args.Preset) != ""
 		if !formatExplicit {
@@ -4228,22 +4018,11 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 				return nil, ctx.Err()
 			}
 			err = withDiagnostics("mcp_extract", videoInput, args.Out, "", err)
-			return buildAutomationEnvelope("extract", started, "error", map[string]string{"input": videoInput}, err), nil
+			return buildAutomationEnvelope(contracts.EnvelopeCommandExtract, started, "error", map[string]string{"input": videoInput}, err), nil
 		}
-		return buildAutomationEnvelope("extract", started, "success", res, nil), nil
-	case "extract_batch":
-		var args struct {
-			Inputs             []string   `json:"inputs"`
-			FPS                mcpFPSSpec `json:"fps"`
-			Voice              bool       `json:"voice"`
-			Format             string     `json:"format"`
-			Preset             string     `json:"preset"`
-			ChunkDuration      int        `json:"chunk_duration"`
-			AllowExpensive     bool       `json:"allow_expensive"`
-			TranscribeBackend  string     `json:"transcribe_backend"`
-			TranscribeBin      string     `json:"transcribe_bin"`
-			TranscribeLanguage string     `json:"transcribe_language"`
-		}
+		return buildAutomationEnvelope(contracts.EnvelopeCommandExtract, started, "success", res, nil), nil
+	case contracts.MCPToolExtractBatch:
+		var args contracts.ExtractBatchArgs
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
 		}
@@ -4256,7 +4035,7 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			}
 		}
 		if len(args.Inputs) == 0 && len(appCfg.AgentInputDirs) > 0 {
-			exts := appCfg.RecentExts
+			exts := appCfg.VideoInputExts
 			if len(exts) == 0 {
 				exts = []string{"mp4", "mkv", "mov"}
 			}
@@ -4282,7 +4061,7 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		if len(args.Inputs) == 0 {
 			return nil, fmt.Errorf("extract_batch requires inputs (or configured agent_input_dirs)")
 		}
-		requestedFPS, fpsExplicit := resolveMCPFPS(args.FPS, appCfg.DefaultFPS)
+		requestedFPS, fpsExplicit := args.FPS.Resolve(appCfg.DefaultFPS)
 		formatExplicit := strings.TrimSpace(args.Format) != ""
 		presetExplicit := strings.TrimSpace(args.Preset) != ""
 		if !formatExplicit {
@@ -4346,12 +4125,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			status = "error"
 		}
 		payload := map[string]any{"total": len(videos), "failures": failures, "items": items}
-		return buildAutomationEnvelope("extract-batch", started, status, payload, nil), nil
-	case "open_last":
-		var args struct {
-			Root     string `json:"root"`
-			Artifact string `json:"artifact"`
-		}
+		return buildAutomationEnvelope(contracts.EnvelopeCommandExtractBatch, started, status, payload, nil), nil
+	case contracts.MCPToolOpenLast:
+		var args contracts.OpenLastArgs
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
 		}
@@ -4373,18 +4149,16 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		started := time.Now()
 		path, runPath, err := findLastRunArtifact(args.Root, args.Artifact)
 		if err != nil {
-			return buildAutomationEnvelope("open-last", started, "error", map[string]string{"root": args.Root, "artifact": args.Artifact}, err), nil
+			return buildAutomationEnvelope(contracts.EnvelopeCommandOpenLast, started, "error", map[string]string{"root": args.Root, "artifact": args.Artifact}, err), nil
 		}
-		return buildAutomationEnvelope("open-last", started, "success", map[string]string{
+		return buildAutomationEnvelope(contracts.EnvelopeCommandOpenLast, started, "success", map[string]string{
 			"root":     args.Root,
 			"artifact": args.Artifact,
 			"run_path": runPath,
 			"path":     path,
 		}, nil), nil
-	case "get_latest_artifacts":
-		var args struct {
-			Root string `json:"root"`
-		}
+	case contracts.MCPToolGetLatestArtifacts:
+		var args contracts.GetLatestArtifactsArgs
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
 		}
@@ -4403,18 +4177,14 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		started := time.Now()
 		artifacts, err := latestRunArtifacts(args.Root)
 		if err != nil {
-			return buildAutomationEnvelope("get_latest_artifacts", started, "error", map[string]string{"root": args.Root}, err), nil
+			return buildAutomationEnvelope(contracts.EnvelopeCommandGetLatestArtifacts, started, "error", map[string]string{"root": args.Root}, err), nil
 		}
-		return buildAutomationEnvelope("get_latest_artifacts", started, "success", map[string]any{
+		return buildAutomationEnvelope(contracts.EnvelopeCommandGetLatestArtifacts, started, "success", map[string]any{
 			"root":      args.Root,
 			"artifacts": artifacts,
 		}, nil), nil
-	case "get_run_artifacts":
-		var args struct {
-			Root   string `json:"root"`
-			Run    string `json:"run"`
-			Recent int    `json:"recent"`
-		}
+	case contracts.MCPToolGetRunArtifacts:
+		var args contracts.GetRunArtifactsArgs
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
 		}
@@ -4434,9 +4204,9 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		if args.Recent > 0 {
 			runs, err := media.RecentRuns(args.Root, args.Recent)
 			if err != nil {
-				return buildAutomationEnvelope("get_run_artifacts", started, "error", map[string]any{"root": args.Root, "recent": args.Recent}, err), nil
+				return buildAutomationEnvelope(contracts.EnvelopeCommandGetRunArtifacts, started, "error", map[string]any{"root": args.Root, "recent": args.Recent}, err), nil
 			}
-			return buildAutomationEnvelope("get_run_artifacts", started, "success", map[string]any{
+			return buildAutomationEnvelope(contracts.EnvelopeCommandGetRunArtifacts, started, "success", map[string]any{
 				"root":  args.Root,
 				"index": media.IndexFilePath(args.Root),
 				"runs":  runs,
@@ -4447,19 +4217,16 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 		}
 		run, err := media.SelectRun(args.Root, args.Run)
 		if err != nil {
-			return buildAutomationEnvelope("get_run_artifacts", started, "error", map[string]any{"root": args.Root, "run": args.Run}, err), nil
+			return buildAutomationEnvelope(contracts.EnvelopeCommandGetRunArtifacts, started, "error", map[string]any{"root": args.Root, "run": args.Run}, err), nil
 		}
-		return buildAutomationEnvelope("get_run_artifacts", started, "success", map[string]any{
+		return buildAutomationEnvelope(contracts.EnvelopeCommandGetRunArtifacts, started, "success", map[string]any{
 			"root":      args.Root,
 			"index":     media.IndexFilePath(args.Root),
 			"run":       run,
 			"artifacts": runArtifactsPayload(run),
 		}, nil), nil
-	case "transcribe_run":
-		var args struct {
-			RunDir        string `json:"run_dir"`
-			ChunkDuration int    `json:"chunk_duration"`
-		}
+	case contracts.MCPToolTranscribeRun:
+		var args contracts.TranscribeRunArgs
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
 		}
@@ -4482,52 +4249,58 @@ func callMCPTool(ctx context.Context, name string, argsRaw json.RawMessage) (any
 			if ctx != nil && ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			return buildAutomationEnvelope("transcribe_run", started, "error", map[string]string{"run_dir": args.RunDir}, err), nil
+			return buildAutomationEnvelope(contracts.EnvelopeCommandTranscribeRun, started, "error", map[string]string{"run_dir": args.RunDir}, err), nil
 		}
-		return buildAutomationEnvelope("transcribe_run", started, "success", res, nil), nil
-	case "prefs_get":
+		return buildAutomationEnvelope(contracts.EnvelopeCommandTranscribeRun, started, "success", res, nil), nil
+	case contracts.MCPToolPrefsGet:
 		started := time.Now()
+		appCfgMu.RLock()
 		payload := map[string]any{
-			"input_dirs":  appCfg.AgentInputDirs,
+			"input_dirs":  append([]string(nil), appCfg.AgentInputDirs...),
 			"output_root": appCfg.AgentOutputRoot,
 			"frames_root": appCfg.FramesRoot,
 		}
-		return buildAutomationEnvelope("prefs_get", started, "success", payload, nil), nil
-	case "prefs_set":
-		var args struct {
-			InputDirs  *[]string `json:"input_dirs"`
-			OutputRoot *string   `json:"output_root"`
-		}
+		appCfgMu.RUnlock()
+		return buildAutomationEnvelope(contracts.EnvelopeCommandPrefsGet, started, "success", payload, nil), nil
+	case contracts.MCPToolPrefsSet:
+		var args contracts.PrefsSetArgs
 		if err := decodeMCPArgs(argsRaw, &args); err != nil {
 			return nil, err
 		}
-		cfg := appCfg
 		if args.InputDirs != nil {
 			for _, p := range *args.InputDirs {
 				if strings.Contains(strings.TrimSpace(p), "://") {
 					return nil, fmt.Errorf("prefs_set input_dirs must be local filesystem paths")
 				}
 			}
-			cfg.AgentInputDirs = *args.InputDirs
 		}
 		if args.OutputRoot != nil {
 			if strings.Contains(strings.TrimSpace(*args.OutputRoot), "://") {
 				return nil, fmt.Errorf("prefs_set output_root must be a local filesystem path")
 			}
-			cfg.AgentOutputRoot = strings.TrimSpace(*args.OutputRoot)
 		}
 		started := time.Now()
+		appCfgMu.Lock()
+		cfg := appCfg
+		if args.InputDirs != nil {
+			cfg.AgentInputDirs = append([]string(nil), (*args.InputDirs)...)
+		}
+		if args.OutputRoot != nil {
+			cfg.AgentOutputRoot = strings.TrimSpace(*args.OutputRoot)
+		}
 		path, err := appconfig.Save(cfg)
 		if err != nil {
-			return buildAutomationEnvelope("prefs_set", started, "error", nil, err), nil
+			appCfgMu.Unlock()
+			return buildAutomationEnvelope(contracts.EnvelopeCommandPrefsSet, started, "error", nil, err), nil
 		}
 		appCfg = cfg
 		payload := map[string]any{
 			"config_path": path,
-			"input_dirs":  appCfg.AgentInputDirs,
+			"input_dirs":  append([]string(nil), appCfg.AgentInputDirs...),
 			"output_root": appCfg.AgentOutputRoot,
 		}
-		return buildAutomationEnvelope("prefs_set", started, "success", payload, nil), nil
+		appCfgMu.Unlock()
+		return buildAutomationEnvelope(contracts.EnvelopeCommandPrefsSet, started, "success", payload, nil), nil
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -5297,7 +5070,6 @@ func collectDoctorReport(cfg appconfig.Config) doctorReport {
 		GPUAvailable: gpu.Available, // Deprecated field for backward compatibility
 		WhisperModel: whisperModel,
 		Environment: map[string]string{
-			"OBS_VIDEO_DIR":      valueOrDash(os.Getenv("OBS_VIDEO_DIR")),
 			"WHISPER_BIN":        valueOrDash(os.Getenv("WHISPER_BIN")),
 			"FASTER_WHISPER_BIN": valueOrDash(os.Getenv("FASTER_WHISPER_BIN")),
 			"WHISPER_MODEL":      valueOrDash(os.Getenv("WHISPER_MODEL")),
@@ -5378,7 +5150,6 @@ func printDoctorReport(r doctorReport) {
 	fmt.Println("Environment")
 	fmt.Printf("GOOS/GOARCH:       %s/%s\n", r.GOOS, r.GOARCH)
 	fmt.Printf("CONFIG_PATH:       %s\n", valueOrDash(r.ConfigPath))
-	fmt.Printf("OBS_VIDEO_DIR:     %s\n", valueOrDash(r.Environment["OBS_VIDEO_DIR"]))
 	fmt.Printf("WHISPER_BIN:       %s\n", valueOrDash(r.Environment["WHISPER_BIN"]))
 	fmt.Printf("FASTER_WHISPER_BIN:%s\n", valueOrDash(r.Environment["FASTER_WHISPER_BIN"]))
 	fmt.Printf("WHISPER_MODEL:     %s\n", valueOrDash(r.Environment["WHISPER_MODEL"]))
@@ -5537,6 +5308,20 @@ func printDoctorReport(r doctorReport) {
 		fmt.Println("Recommendations")
 		for _, rec := range recommendations {
 			fmt.Printf("→ %s\n", rec)
+		}
+	}
+
+	// First-run nudge: if no config file exists on disk, point users at the
+	// one-liner most will want. Defaults already work for extract; this is
+	// purely a discoverability hint for 'extract recent'.
+	if r.ConfigPath != "" {
+		if _, err := os.Stat(r.ConfigPath); errors.Is(err, os.ErrNotExist) {
+			fmt.Println("")
+			fmt.Println("First run")
+			fmt.Println("→ Defaults are fine for most users. No config needed to extract.")
+			fmt.Println("  To enable 'extract recent', point it at your capture dir:")
+			fmt.Println("    framescli setup --non-interactive --video-input-dirs /path/to/recordings")
+			fmt.Println("  Agents: use the MCP 'prefs_set' tool instead.")
 		}
 	}
 }
@@ -5918,20 +5703,19 @@ func configCommand() *cobra.Command {
 			path, _ := appconfig.Path()
 			fmt.Println("Config")
 			fmt.Println("------")
-			fmt.Printf("Path:            %s\n", path)
-			fmt.Printf("Frames Root:     %s\n", appCfg.FramesRoot)
-			fmt.Printf("OBS Video Dir:   %s\n", valueOrDash(appCfg.OBSVideoDir))
-			fmt.Printf("Recent Dirs:     %s\n", strings.Join(appCfg.RecentVideoDirs, ", "))
-			fmt.Printf("Recent Exts:     %s\n", strings.Join(appCfg.RecentExts, ", "))
-			fmt.Printf("HWAccel:         %s\n", appCfg.HWAccel)
-			fmt.Printf("Performance:     %s\n", appCfg.PerformanceMode)
-			fmt.Printf("Default FPS:     %.2f\n", appCfg.DefaultFPS)
-			fmt.Printf("Default Format:  %s\n", appCfg.DefaultFormat)
-			fmt.Printf("Whisper Bin:     %s\n", appCfg.WhisperBin)
-			fmt.Printf("FasterWhisper:   %s\n", appCfg.FasterWhisperBin)
-			fmt.Printf("Whisper Model:   %s\n", appCfg.WhisperModel)
-			fmt.Printf("Whisper Language:%s\n", valueOrDash(appCfg.WhisperLanguage))
-			fmt.Printf("Transcribe Back: %s\n", appCfg.TranscribeBackend)
+			fmt.Printf("Path:             %s\n", path)
+			fmt.Printf("Frames Root:      %s\n", appCfg.FramesRoot)
+			fmt.Printf("Video Input Dirs: %s\n", joinOrDash(appCfg.VideoInputDirs))
+			fmt.Printf("Video Input Exts: %s\n", joinOrDash(appCfg.VideoInputExts))
+			fmt.Printf("HWAccel:          %s\n", appCfg.HWAccel)
+			fmt.Printf("Performance:      %s\n", appCfg.PerformanceMode)
+			fmt.Printf("Default FPS:      %.2f\n", appCfg.DefaultFPS)
+			fmt.Printf("Default Format:   %s\n", appCfg.DefaultFormat)
+			fmt.Printf("Whisper Bin:      %s\n", appCfg.WhisperBin)
+			fmt.Printf("FasterWhisper:    %s\n", appCfg.FasterWhisperBin)
+			fmt.Printf("Whisper Model:    %s\n", appCfg.WhisperModel)
+			fmt.Printf("Whisper Language: %s\n", valueOrDash(appCfg.WhisperLanguage))
+			fmt.Printf("Transcribe Back:  %s\n", appCfg.TranscribeBackend)
 			warnings := appconfig.Validate(appCfg)
 			if len(warnings) > 0 {
 				fmt.Println("")
@@ -5949,9 +5733,8 @@ func setupCommand() *cobra.Command {
 	var yes bool
 	var nonInteractive bool
 	var framesRoot string
-	var obsVideoDir string
-	var recentVideoDirs string
-	var recentExts string
+	var videoInputDirs string
+	var videoInputExts string
 	var defaultFPS float64
 	var defaultFormat string
 	var hwaccel string
@@ -5963,7 +5746,14 @@ func setupCommand() *cobra.Command {
 	var transcribeBackend string
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Guided setup for defaults and toolchain config",
+		Short: "Show current config and persist defaults (flag-driven, no prompts)",
+		Long: `FramesCLI works out of the box — run 'framescli extract <video>' with no setup.
+
+Use 'framescli setup' with no flags to print the current config as a cheat-sheet.
+Use '--non-interactive --flag=value' to persist specific fields.
+Use '--yes' to write the current defaults to disk without changing anything.
+
+Agents should use the MCP 'prefs_set' tool instead of this command.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := appCfg
 			if cmd.Flags().Changed("performance-mode") {
@@ -5976,14 +5766,11 @@ func setupCommand() *cobra.Command {
 				if cmd.Flags().Changed("frames-root") {
 					cfg.FramesRoot = framesRoot
 				}
-				if cmd.Flags().Changed("obs-video-dir") {
-					cfg.OBSVideoDir = obsVideoDir
+				if cmd.Flags().Changed("video-input-dirs") {
+					cfg.VideoInputDirs = splitCSVPaths(videoInputDirs)
 				}
-				if cmd.Flags().Changed("recent-video-dirs") {
-					cfg.RecentVideoDirs = splitCSVPaths(recentVideoDirs)
-				}
-				if cmd.Flags().Changed("recent-extensions") {
-					cfg.RecentExts = splitCSVExts(recentExts)
+				if cmd.Flags().Changed("video-input-extensions") {
+					cfg.VideoInputExts = splitCSVExts(videoInputExts)
 				}
 				if cmd.Flags().Changed("default-fps") {
 					cfg.DefaultFPS = defaultFPS
@@ -6012,79 +5799,21 @@ func setupCommand() *cobra.Command {
 				if cmd.Flags().Changed("transcribe-backend") {
 					cfg.TranscribeBackend = transcribeBackend
 				}
-				path, err := appconfig.Save(cfg)
-				if err != nil {
-					failf("Failed to save config: %v\n", err)
-					return
-				}
-				appCfg = cfg
-				appconfig.ApplyEnvDefaults(appCfg)
-				warnings := appconfig.Validate(appCfg)
-				if len(warnings) > 0 {
-					fmt.Println("Config warnings:")
-					for _, w := range warnings {
-						fmt.Printf("- %s: %s\n", w.Field, w.Message)
-					}
-				}
-				fmt.Printf("Saved config: %s\n", path)
+				saveSetupConfig(cfg)
 				return
 			}
 			if yes {
-				path, err := appconfig.Save(cfg)
-				if err != nil {
-					failf("Failed to save config: %v\n", err)
-					return
-				}
-				appCfg = cfg
-				appconfig.ApplyEnvDefaults(appCfg)
-				warnings := appconfig.Validate(appCfg)
-				if len(warnings) > 0 {
-					fmt.Println("Config warnings:")
-					for _, w := range warnings {
-						fmt.Printf("- %s: %s\n", w.Field, w.Message)
-					}
-				}
-				fmt.Printf("Saved config: %s\n", path)
+				saveSetupConfig(cfg)
 				return
 			}
-
-			result, cancelled, err := runSetupWizard(cfg)
-			if err != nil {
-				failf("Setup wizard failed: %v\n", err)
-				return
-			}
-			if cancelled {
-				fmt.Println("Setup canceled. No config changes were written.")
-				return
-			}
-			cfg = result.Config
-
-			path, err := appconfig.Save(cfg)
-			if err != nil {
-				failf("Failed to save config: %v\n", err)
-				return
-			}
-			appCfg = cfg
-			appconfig.ApplyEnvDefaults(appCfg)
-			warnings := appconfig.Validate(appCfg)
-			if len(warnings) > 0 {
-				fmt.Println("Config warnings:")
-				for _, w := range warnings {
-					fmt.Printf("- %s: %s\n", w.Field, w.Message)
-				}
-			}
-			fmt.Printf("Saved config: %s\n", path)
-			fmt.Println("Next steps:")
-			fmt.Println("- Run `framescli doctor` to validate local dependencies.")
-			fmt.Println("- Run `framescli extract <video>` to process video, or `framescli mcp` for agent integration.")
+			printSetupCheatSheet(cfg)
 		},
 	}
-	cmd.Flags().BoolVar(&yes, "yes", false, "Write current defaults without prompts")
-	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Apply provided flags without prompts")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Write current defaults to disk without changing anything")
+	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Apply provided flags and save")
 	cmd.Flags().StringVar(&framesRoot, "frames-root", appCfg.FramesRoot, "Default frames root directory")
-	cmd.Flags().StringVar(&obsVideoDir, "obs-video-dir", appCfg.OBSVideoDir, "Default OBS recordings directory")
-	cmd.Flags().StringVar(&recentVideoDirs, "recent-video-dirs", strings.Join(appCfg.RecentVideoDirs, ","), "CSV of directories used by extract recent")
-	cmd.Flags().StringVar(&recentExts, "recent-extensions", strings.Join(appCfg.RecentExts, ","), "CSV of file extensions for extract recent")
+	cmd.Flags().StringVar(&videoInputDirs, "video-input-dirs", strings.Join(appCfg.VideoInputDirs, ","), "CSV of directories used by 'extract recent'")
+	cmd.Flags().StringVar(&videoInputExts, "video-input-extensions", strings.Join(appCfg.VideoInputExts, ","), "CSV of file extensions for 'extract recent'")
 	cmd.Flags().Float64Var(&defaultFPS, "default-fps", appCfg.DefaultFPS, "Default extraction FPS")
 	cmd.Flags().StringVar(&defaultFormat, "default-format", appCfg.DefaultFormat, "Default frame format (png/jpg)")
 	cmd.Flags().StringVar(&hwaccel, "hwaccel", appCfg.HWAccel, "Default hardware acceleration mode: none|auto|cuda|vaapi|qsv")
@@ -6097,18 +5826,73 @@ func setupCommand() *cobra.Command {
 	return cmd
 }
 
+func saveSetupConfig(cfg appconfig.Config) {
+	path, err := appconfig.Save(cfg)
+	if err != nil {
+		failf("Failed to save config: %v\n", err)
+		return
+	}
+	appCfg = cfg
+	appconfig.ApplyEnvDefaults(appCfg)
+	warnings := appconfig.Validate(appCfg)
+	if len(warnings) > 0 {
+		fmt.Println("Config warnings:")
+		for _, w := range warnings {
+			fmt.Printf("- %s: %s\n", w.Field, w.Message)
+		}
+	}
+	fmt.Printf("Saved config: %s\n", path)
+}
+
+func printSetupCheatSheet(cfg appconfig.Config) {
+	path, _ := appconfig.Path()
+	fmt.Println("FramesCLI config")
+	fmt.Println("================")
+	fmt.Printf("Config path: %s\n\n", path)
+	fmt.Println("Current values")
+	fmt.Println("--------------")
+	fmt.Printf("%-24s %s\n", "frames-root", cfg.FramesRoot)
+	fmt.Printf("%-24s %s\n", "video-input-dirs", joinOrDash(cfg.VideoInputDirs))
+	fmt.Printf("%-24s %s\n", "video-input-extensions", joinOrDash(cfg.VideoInputExts))
+	fmt.Printf("%-24s %.2f\n", "default-fps", cfg.DefaultFPS)
+	fmt.Printf("%-24s %s\n", "default-format", cfg.DefaultFormat)
+	fmt.Printf("%-24s %s\n", "performance-mode", cfg.PerformanceMode)
+	fmt.Printf("%-24s %s\n", "hwaccel", cfg.HWAccel)
+	fmt.Printf("%-24s %s\n", "whisper-bin", cfg.WhisperBin)
+	fmt.Printf("%-24s %s\n", "faster-whisper-bin", cfg.FasterWhisperBin)
+	fmt.Printf("%-24s %s\n", "whisper-model", cfg.WhisperModel)
+	fmt.Printf("%-24s %s\n", "whisper-language", valueOrDash(cfg.WhisperLanguage))
+	fmt.Printf("%-24s %s\n", "transcribe-backend", cfg.TranscribeBackend)
+	fmt.Println("")
+	fmt.Println("To change a value")
+	fmt.Println("-----------------")
+	fmt.Println("  framescli setup --non-interactive --<flag> <value>")
+	fmt.Println("")
+	fmt.Println("Examples")
+	fmt.Println("--------")
+	fmt.Println("  framescli setup --non-interactive --video-input-dirs /path/to/recordings")
+	fmt.Println("  framescli setup --non-interactive --performance-mode balanced --hwaccel auto")
+	fmt.Println("  framescli setup --non-interactive --frames-root ~/my-frames")
+	fmt.Println("")
+	fmt.Println("See all flags: framescli setup --help")
+	fmt.Println("Agents: prefer the MCP 'prefs_set' tool.")
+}
+
+func joinOrDash(values []string) string {
+	if len(values) == 0 {
+		return "-"
+	}
+	return strings.Join(values, ", ")
+}
+
 func resolveVideoInput(input string) (string, string, error) {
 	videoPath := input
 	if strings.EqualFold(input, "recent") {
-		recentDirs := appCfg.RecentVideoDirs
+		recentDirs := appCfg.VideoInputDirs
 		if len(recentDirs) == 0 {
-			if strings.TrimSpace(appCfg.OBSVideoDir) != "" {
-				recentDirs = []string{appCfg.OBSVideoDir}
-			} else {
-				recentDirs = []string{media.DefaultOBSVideoDir()}
-			}
+			return "", "", fmt.Errorf("'recent' requires video_input_dirs; set with: framescli setup --non-interactive --video-input-dirs /path/to/recordings")
 		}
-		recentPath, sourceDir, err := media.FindMostRecentVideoInDirs(recentDirs, appCfg.RecentExts)
+		recentPath, sourceDir, err := media.FindMostRecentVideoInDirs(recentDirs, appCfg.VideoInputExts)
 		if err != nil {
 			return "", "", err
 		}

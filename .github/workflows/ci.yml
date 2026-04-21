@@ -8,31 +8,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      GOCACHE: ${{ runner.temp }}/go-cache
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22.x'
-      - name: Tidy check
-        run: |
-          go mod tidy
-          git diff --exit-code
-      - name: Format check
-        run: |
-          test -z "$(gofmt -l ./cmd ./internal)"
-      - name: Unit tests
-        run: go test ./...
-      - name: CLI smoke
-        run: |
-          go run ./cmd/frames --help >/dev/null
-          go run ./cmd/frames doctor --help >/dev/null
-          go run ./cmd/frames benchmark --help >/dev/null
-          go run ./cmd/frames clean --help >/dev/null
-      - name: Build
-        run: go build ./...
+      - name: Fast QA pass
+        run: ./scripts/qa-pass.sh --no-public-smoke
 
   smoke-matrix:
     runs-on: ${{ matrix.os }}
+    env:
+      GOCACHE: ${{ runner.temp }}/go-cache
     strategy:
       fail-fast: false
       matrix:

@@ -1,5 +1,30 @@
 # Changelog
 
+## [Unreleased]
+
+Pre-1.0 cleanup pass preparing for the first public announcement. Focus: smaller surface, fewer personal-workflow artifacts, better agent-first UX.
+
+### Removed
+- **Interactive setup wizard.** Deleted the 1,054-line Bubbletea wizard and its dependencies (`charmbracelet/bubbletea`, `bubbles`, `lipgloss`). `framescli setup` with no flags now prints a cheat-sheet of current config plus one-liner examples for changing values. Use `--non-interactive --flag=value` to persist changes, or `--yes` to write current defaults without changing anything.
+- **OBS-specific config.** Removed the `obs_video_dir` config key, the `OBS_VIDEO_DIR` environment variable, the `DefaultOBSVideoDir()` helper, and the hardcoded `C:\Users\wraelen\Videos\OBS` fallback path. `extract recent` now requires `video_input_dirs` to be set and errors with a clear hint if it isn't — no more silent fallback to a path that only ever worked on one machine.
+- **Legacy TUI config fields.** `tui_theme_preset`, `tui_simple_mode`, `tui_welcome_seen`, `tui_vim_mode` are gone from the `Config` struct. Old configs with these keys still load cleanly (Go silently ignores unknown fields on unmarshal); on next save the stale keys are dropped.
+- **Dead `drop_modal.go`.** 211 lines of unreferenced modal code from a removed dashboard.
+
+### Changed
+- **Renamed `recent_video_dirs` → `video_input_dirs`** and **`recent_extensions` → `video_input_extensions`**. The `--recent-video-dirs` / `--recent-extensions` CLI flags are now `--video-input-dirs` / `--video-input-extensions`. The old names were misleading ("recent" implied a list of recently used videos — the field is actually "where to look for videos"). Old config keys are silently dropped on load; set the new keys via `framescli setup --non-interactive --video-input-dirs <path>`.
+- **`framescli doctor` prints a first-run hint** when no config file exists, pointing at `framescli setup --non-interactive --video-input-dirs <path>` for users who want `extract recent` to work. Defaults still require zero config for everything else.
+- **MCP `prefs_get` / `prefs_set` are now concurrency-safe.** Added a mutex around `appCfg` access so concurrent tool calls don't return stale snapshots.
+
+### Added
+- **`internal/contracts/` source-of-truth registry.** MCP tool definitions and input schemas are now derived from Go types via reflection. `cmd/contractgen` regenerates `docs/schemas/{cli-response-envelope.json,mcp-tools.json,README.md}` from the registry. `scripts/generate-schemas.sh` is the entrypoint; `TestGeneratedAgentContractArtifactsAreCurrent` fails CI if generated docs drift.
+- **`scripts/qa-pass.sh` canonical QA entrypoint.** Runs preflight + MCP contract tests + public smoke. CI (`ci.yml`), integration (`integration.yml`), and release (`release.yml`) workflows now call this instead of ad-hoc step lists.
+- **README "Configuration" section** documenting the three flags most users care about, with `prefs_set` called out explicitly as the agent-facing surface.
+
+### Fixed
+- **Correct `--fps auto` help text.** Both `extract --fps` and `preview --fps` flag help now describe the real target-frame formula (~480 frames, clamped 1–8 fps) instead of the obsolete "~60-frame mode" claim.
+- **`framescli config` output alignment.** Labels in the config printout now have a space between the colon and the value (previously rendered as `Whisper Language:-`).
+- **MCP stdio smoke test uses the real handshake.** `scripts/mcp-smoke.sh` now sends `initialize` + `notifications/initialized` before each tool call, matching the MCP spec.
+
 ## [0.2.6] - 2026-04-19
 
 Patch release for the shipped v0.2.5 regressions plus documentation cleanup.
@@ -58,7 +83,7 @@ Polish release driven by an external live-test debug pack. Closes the gaps that 
 - **Doctor recommendations point to real commands.** Replaced fake `framescli prefs set …` references with the actual `framescli setup --non-interactive --hwaccel …` form.
 
 ### Added
-- **`--version` flag and version subcommand** with goreleaser-populated `main.version`/`main.commit`/`main.date` via ldflags. The Homebrew formula's `system "framescli", "--version"` test now actually works.
+- **`--version` flag** with goreleaser-populated `main.version`/`main.commit`/`main.date` via ldflags. The Homebrew formula's `system "framescli", "--version"` test now actually works.
 - **`--force` flag on `extract`** to opt out of resume behavior and re-extract from scratch.
 - **`ProgressFn` callback on `TranscribeOptions`** for embedding transcription in long-running pipelines that want progress events.
 - **Major test additions:** `TestEvaluateResumeStateForceBypasses`, `TestEvaluateResumeStateMatchingFramesSkips`, `TestEvaluateResumeStateMissingAudioRunsFFmpeg`, `TestEvaluateResumeStateFrameCountMismatchRunsFFmpeg`, `TestLooksLikeURL`, `TestExistingTranscriptArtifacts`, `TestFFmpegSupportsHWAccel`, plus `file_not_found` and `path_is_directory` error classification cases.

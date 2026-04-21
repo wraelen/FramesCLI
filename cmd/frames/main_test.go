@@ -15,6 +15,7 @@ import (
 	"time"
 
 	appconfig "github.com/wraelen/framescli/internal/config"
+	"github.com/wraelen/framescli/internal/contracts"
 	"github.com/wraelen/framescli/internal/media"
 )
 
@@ -138,95 +139,6 @@ func TestNormalizeDroppedPath(t *testing.T) {
 		if got := normalizeDroppedPath(tc.in); got != tc.want {
 			t.Fatalf("normalizeDroppedPath(%q)=%q want %q", tc.in, got, tc.want)
 		}
-	}
-}
-
-func TestRotateChoice(t *testing.T) {
-	choices := []string{"laptop-safe", "balanced", "high-fidelity"}
-	if got := rotateChoice(choices, "balanced", 1); got != "high-fidelity" {
-		t.Fatalf("expected high-fidelity, got %s", got)
-	}
-	if got := rotateChoice(choices, "laptop-safe", -1); got != "high-fidelity" {
-		t.Fatalf("expected wrap to high-fidelity, got %s", got)
-	}
-}
-
-func TestSetupWizardViewShowsGuidance(t *testing.T) {
-	m := newSetupWizardModel(appconfig.Default())
-	out := m.View()
-	if !strings.Contains(out, "FramesCLI") || !strings.Contains(out, "Setup") {
-		t.Fatalf("expected setup wizard title, got %q", out)
-	}
-	if !strings.Contains(out, "Quick Setup") {
-		t.Fatalf("expected quick setup welcome copy, got %q", out)
-	}
-}
-
-func TestSetupWizardValidatedConfigRejectsBadFPS(t *testing.T) {
-	m := newSetupWizardModel(appconfig.Default())
-	for i := range m.fields {
-		if m.fields[i].label == "Primary recordings directory" {
-			m.fields[i].input.SetValue("/tmp/recordings")
-			break
-		}
-	}
-	for i := range m.fields {
-		if m.fields[i].label == "Default FPS" {
-			m.fields[i].input.SetValue("0")
-			break
-		}
-	}
-	if _, err := m.validatedConfig(); err == nil || !strings.Contains(err.Error(), "positive number") {
-		t.Fatalf("expected positive number error, got %v", err)
-	}
-}
-
-func TestSetupWizardCustomWhisperModelSaved(t *testing.T) {
-	cfg := appconfig.Default()
-	cfg.WhisperModel = "ggml-large-v3"
-	m := newSetupWizardModel(cfg)
-	got := m.configFromFields()
-	if got.WhisperModel != "ggml-large-v3" {
-		t.Fatalf("expected custom whisper model to be preserved, got %q", got.WhisperModel)
-	}
-}
-
-func TestResolveOpenPathPrefersExistingDirectory(t *testing.T) {
-	tmp := t.TempDir()
-	nested := filepath.Join(tmp, "recordings")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	got := resolveOpenPath(nested + ", /missing")
-	if got != nested {
-		t.Fatalf("expected existing directory %q, got %q", nested, got)
-	}
-}
-
-func TestResolveOpenPathFallsBackToParent(t *testing.T) {
-	tmp := t.TempDir()
-	target := filepath.Join(tmp, "new-output", "frames")
-	got := resolveOpenPath(target)
-	want := tmp
-	if got != want {
-		t.Fatalf("expected nearest existing directory %q, got %q", want, got)
-	}
-}
-
-func TestSetupWizardPickSelectedPathUpdatesField(t *testing.T) {
-	orig := setupDirectoryPicker
-	defer func() { setupDirectoryPicker = orig }()
-	setupDirectoryPicker = func(initial string) (string, error) {
-		return "/tmp/chosen", nil
-	}
-
-	m := newSetupWizardModel(appconfig.Default())
-	m.step = 1
-	if err := m.pickSelectedPath(); err != nil {
-		t.Fatalf("expected picker success, got %v", err)
-	}
-	if got := m.fields[0].input.Value(); got != "/tmp/chosen" {
-		t.Fatalf("expected chosen path to be written into field, got %q", got)
 	}
 }
 
@@ -569,7 +481,7 @@ func TestMCPFPSSpec(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				var spec mcpFPSSpec
+				var spec contracts.FPSSpec
 				err := json.Unmarshal([]byte(tc.raw), &spec)
 				if tc.wantErr {
 					if err == nil {
@@ -588,11 +500,11 @@ func TestMCPFPSSpec(t *testing.T) {
 	})
 
 	t.Run("resolve", func(t *testing.T) {
-		fps, explicit := resolveMCPFPS(mcpFPSSpec{Value: 0, Explicit: true}, 4)
+		fps, explicit := (contracts.FPSSpec{Value: 0, Explicit: true}).Resolve(4)
 		if fps != 0 || !explicit {
 			t.Fatalf("expected explicit auto fps=0, got fps=%v explicit=%v", fps, explicit)
 		}
-		fps, explicit = resolveMCPFPS(mcpFPSSpec{}, 4)
+		fps, explicit = (contracts.FPSSpec{}).Resolve(4)
 		if fps != 4 || explicit {
 			t.Fatalf("expected fallback fps=4 explicit=false, got fps=%v explicit=%v", fps, explicit)
 		}
@@ -1168,7 +1080,6 @@ func TestPrintDoctorReportRecoveryHints(t *testing.T) {
 		GOOS:   "linux",
 		GOARCH: "amd64",
 		Environment: map[string]string{
-			"OBS_VIDEO_DIR":    "-",
 			"WHISPER_BIN":      "whisper",
 			"WHISPER_MODEL":    "base",
 			"WHISPER_LANGUAGE": "-",

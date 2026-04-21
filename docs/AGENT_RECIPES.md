@@ -1,7 +1,8 @@
 # FramesCLI Agent Recipes
 
 This page contains copy-paste flows. For setup rules, response shapes, and path
-safety, see [AGENT_INTEGRATION.md](AGENT_INTEGRATION.md).
+safety, see the canonical guide:
+[AGENT_INTEGRATION.md](AGENT_INTEGRATION.md).
 
 ## MCP Happy Path
 
@@ -174,11 +175,10 @@ framescli extract-batch "recordings/*.mp4" \
   --json
 ```
 
-Suggested follow-up:
+Optional index rebuild:
 
 ```bash
 framescli index frames --out frames/index.json
-framescli tui --root frames
 ```
 
 The index at `<frames_root>/index.json` is refreshed after successful

@@ -10,7 +10,7 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS ?= -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-.PHONY: build deps deps-whisper smoke-public test test-integration smoke preflight fmt tidy run verify release-snapshot release-verify
+.PHONY: build deps deps-whisper smoke-public test test-integration smoke preflight qa-pass generate-schemas fmt tidy run verify release-snapshot release-verify
 
 build:
 	mkdir -p $(OUT_DIR)
@@ -39,6 +39,12 @@ smoke:
 
 preflight:
 	./scripts/preflight.sh
+
+qa-pass:
+	./scripts/qa-pass.sh
+
+generate-schemas:
+	./scripts/generate-schemas.sh
 
 fmt:
 	gofmt -w ./cmd ./internal

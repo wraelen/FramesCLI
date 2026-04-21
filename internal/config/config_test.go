@@ -31,9 +31,6 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if got.FramesRoot != "my-frames" || got.DefaultFPS != 6 || got.DefaultFormat != "jpg" || got.HWAccel != "cuda" || got.PerformanceMode != "fast" {
 		t.Fatalf("unexpected config: %+v", got)
 	}
-	if got.TUIThemePreset != "default" || !got.TUISimpleMode || got.TUIWelcomeSeen {
-		t.Fatalf("unexpected tui defaults after round-trip: %+v", got)
-	}
 }
 
 func TestLoadOrDefaultMissingFile(t *testing.T) {
@@ -59,14 +56,12 @@ func TestApplyEnvDefaults(t *testing.T) {
 	_ = os.Unsetenv("WHISPER_MODEL")
 	_ = os.Unsetenv("WHISPER_LANGUAGE")
 	_ = os.Unsetenv("TRANSCRIBE_BACKEND")
-	_ = os.Unsetenv("OBS_VIDEO_DIR")
 	t.Cleanup(func() {
 		_ = os.Unsetenv("WHISPER_BIN")
 		_ = os.Unsetenv("FASTER_WHISPER_BIN")
 		_ = os.Unsetenv("WHISPER_MODEL")
 		_ = os.Unsetenv("WHISPER_LANGUAGE")
 		_ = os.Unsetenv("TRANSCRIBE_BACKEND")
-		_ = os.Unsetenv("OBS_VIDEO_DIR")
 	})
 
 	cfg := Default()
@@ -75,14 +70,10 @@ func TestApplyEnvDefaults(t *testing.T) {
 	cfg.WhisperModel = "small"
 	cfg.WhisperLanguage = "en"
 	cfg.TranscribeBackend = "faster-whisper"
-	cfg.OBSVideoDir = "/videos"
 	ApplyEnvDefaults(cfg)
 
 	if os.Getenv("WHISPER_BIN") != "custom-whisper" {
 		t.Fatalf("expected WHISPER_BIN to be set")
-	}
-	if os.Getenv("OBS_VIDEO_DIR") != "/videos" {
-		t.Fatalf("expected OBS_VIDEO_DIR to be set")
 	}
 	if os.Getenv("FASTER_WHISPER_BIN") != "custom-faster-whisper" {
 		t.Fatalf("expected FASTER_WHISPER_BIN to be set")
@@ -111,56 +102,12 @@ func TestSupportedWhisperModels(t *testing.T) {
 
 func TestValidate(t *testing.T) {
 	cfg := Default()
-	cfg.OBSVideoDir = "/path/that/does/not/exist"
+	cfg.VideoInputDirs = []string{"/path/that/does/not/exist"}
 	cfg.WhisperBin = "definitely-not-installed-bin"
 	cfg.DefaultFPS = 120
 	warnings := Validate(cfg)
 	if len(warnings) == 0 {
 		t.Fatalf("expected validation warnings")
-	}
-}
-
-func TestNormalizeThemePreset(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "cfg-theme.json")
-	if err := os.Setenv("FRAMES_CONFIG", path); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Unsetenv("FRAMES_CONFIG") })
-
-	cfg := Default()
-	cfg.TUIThemePreset = "solarized"
-	if _, err := Save(cfg); err != nil {
-		t.Fatal(err)
-	}
-	got, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.TUIThemePreset != "default" {
-		t.Fatalf("expected fallback theme default, got %s", got.TUIThemePreset)
-	}
-}
-
-func TestLightThemePresetPersists(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "cfg-theme-light.json")
-	if err := os.Setenv("FRAMES_CONFIG", path); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Unsetenv("FRAMES_CONFIG") })
-
-	cfg := Default()
-	cfg.TUIThemePreset = "light"
-	if _, err := Save(cfg); err != nil {
-		t.Fatal(err)
-	}
-	got, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.TUIThemePreset != "light" {
-		t.Fatalf("expected light theme to persist, got %s", got.TUIThemePreset)
 	}
 }
 
@@ -247,28 +194,6 @@ func TestAgentPathPreferencesPersist(t *testing.T) {
 	}
 	if got.AgentOutputRoot != "/tmp/out" {
 		t.Fatalf("unexpected agent_output_root: %q", got.AgentOutputRoot)
-	}
-}
-
-func TestTUIVimModePersists(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "cfg-vim-mode.json")
-	if err := os.Setenv("FRAMES_CONFIG", path); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Unsetenv("FRAMES_CONFIG") })
-
-	cfg := Default()
-	cfg.TUIVimMode = true
-	if _, err := Save(cfg); err != nil {
-		t.Fatal(err)
-	}
-	got, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !got.TUIVimMode {
-		t.Fatalf("expected tui_vim_mode to persist true")
 	}
 }
 

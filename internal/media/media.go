@@ -41,8 +41,6 @@ func defaultFramesRoot() string {
 const contactSheetMaxTiles = 48
 const contactTileWidth = 420
 
-var obsDefaultDir = `C:\Users\wraelen\Videos\OBS`
-
 type ExtractMediaOptions struct {
 	Context   context.Context
 	VideoPath string
@@ -1195,13 +1193,6 @@ func CountFrames(imagesDir string) (int, error) {
 		return 0, err
 	}
 	return len(frames), nil
-}
-
-func DefaultOBSVideoDir() string {
-	if env := os.Getenv("OBS_VIDEO_DIR"); env != "" {
-		return env
-	}
-	return obsDefaultDir
 }
 
 func FindMostRecentVideo(dir string) (string, error) {

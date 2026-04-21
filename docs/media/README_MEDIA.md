@@ -1,16 +1,14 @@
 # README Media Guide
 
-Use these filenames when adding recorded product demos:
+Use these filenames when adding curated product demos or screenshots:
 
-- `docs/media/hero-tui.gif`
+- `docs/media/hero-cli.gif`
 - `docs/media/hero-mcp.gif`
-- `docs/media/tui-overview.png`
+- `docs/media/cli-preview.png`
 - `docs/media/mcp-session.png`
 
-Current repo still includes static SVG placeholder artwork for planning/demo layout:
-
-- `docs/media/hero-tui.svg`
-- `docs/media/hero-mcp.svg`
+Keep media additions intentional. This directory should only carry assets that
+directly support docs, release notes, or install/setup guidance.
 
 ## Capture Specs
 
@@ -23,14 +21,14 @@ Current repo still includes static SVG placeholder artwork for planning/demo lay
 
 ## Suggested Capture Sequences
 
-### TUI Hero (`hero-tui.gif`)
+### CLI Hero (`hero-cli.gif`)
 
 Record this flow:
 
-1. `framescli tui`
-2. Import a video
-3. Move through wizard steps
-4. Show queue run progress and result actions
+1. `framescli doctor`
+2. `framescli preview /path/to/video.mp4 --mode both --json`
+3. `framescli extract /path/to/video.mp4 --json`
+4. `framescli open-last --artifact run`
 
 ### MCP Hero (`hero-mcp.gif`)
 
@@ -38,7 +36,14 @@ Record this flow:
 
 1. `framescli mcp` in one terminal pane
 2. MCP client calling `preview` then `extract`
-3. Show returned artifact paths / JSON result
+3. Show returned artifact paths and JSON result
+
+### CLI Preview Screenshot (`cli-preview.png`)
+
+Capture a readable terminal frame showing:
+
+1. `framescli preview /path/to/video.mp4 --mode both --json`
+2. the preview summary and JSON envelope together in one shot
 
 ## Optional Tools
 
