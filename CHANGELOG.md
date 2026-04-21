@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.0] - 2026-04-20
 
 Pre-1.0 cleanup pass preparing for the first public announcement. Focus: smaller surface, fewer personal-workflow artifacts, better agent-first UX.
 
